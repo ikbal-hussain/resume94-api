@@ -56,7 +56,7 @@ describe("gemini provider", () => {
   });
 
   it("maps upstream failures to 502", async () => {
-    const ai = createAiService(cfg({ GEMINI_API_KEY: "k" }), async () => ({ ok: false, status: 500 }));
+    const ai = createAiService(cfg({ GEMINI_API_KEY: "k" }), async () => ({ ok: false, status: 500, text: async () => "{}" }));
     await expect(ai.summary({ role: "a", experience: "b", keySkills: "c" })).rejects.toMatchObject({ status: 502 });
   });
 });
@@ -83,7 +83,7 @@ describe("groq provider", () => {
     expect(await ai.summary({ role: "Dev", experience: "2y", keySkills: "Go" })).toBe("hi");
     expect(seen.url).toBe("https://api.groq.com/openai/v1/chat/completions");
     expect(seen.init.headers.Authorization).toBe("Bearer secret-key");
-    expect(JSON.parse(seen.init.body).model).toBe("llama-3.3-70b-versatile");
+    expect(JSON.parse(seen.init.body).model).toBe("openai/gpt-oss-120b");
   });
 
   it("honours GROQ_MODEL override", async () => {
@@ -97,8 +97,15 @@ describe("groq provider", () => {
     expect(JSON.parse(seen.init.body).model).toBe("mixtral-8x7b");
   });
 
-  it("maps upstream failures to 502", async () => {
-    const ai = createAiService(cfg({ GROQ_API_KEY: "k" }), async () => ({ ok: false, status: 500 }));
-    await expect(ai.summary({ role: "a", experience: "b", keySkills: "c" })).rejects.toMatchObject({ status: 502 });
+  it("maps upstream failures to actionable errors", async () => {
+    const reply = (status) => async () => ({ ok: false, status, text: async () => "{}" });
+    const ai = (status) => createAiService(cfg({ GROQ_API_KEY: "k" }), reply(status));
+    const args = { role: "a", experience: "b", keySkills: "c" };
+
+    // A retired/unknown model id is the most common misconfiguration.
+    await expect(ai(404).summary(args)).rejects.toMatchObject({ status: 502, code: "AI_MODEL_NOT_FOUND" });
+    await expect(ai(401).summary(args)).rejects.toMatchObject({ status: 502, code: "AI_AUTH" });
+    await expect(ai(429).summary(args)).rejects.toMatchObject({ status: 429, code: "AI_RATE_LIMITED" });
+    await expect(ai(500).summary(args)).rejects.toMatchObject({ status: 502, code: "AI_UPSTREAM" });
   });
 });

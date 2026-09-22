@@ -1,4 +1,4 @@
-import { HttpError } from "../../../middleware/errors.js";
+import { HttpError, upstreamFailure } from "../../../middleware/errors.js";
 
 // Google Gemini — https://ai.google.dev/api/generate-content
 export const gemini = {
@@ -19,7 +19,7 @@ export const gemini = {
     } catch {
       throw new HttpError(504, "AI provider timed out", "AI_TIMEOUT");
     }
-    if (!res.ok) throw new HttpError(502, "AI provider error", "AI_UPSTREAM");
+    if (!res.ok) throw await upstreamFailure("gemini", model, res);
     const json = await res.json();
     return json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
   },
