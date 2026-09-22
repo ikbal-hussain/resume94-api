@@ -5,7 +5,7 @@ import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import { usersRepo } from "./repositories/users.js";
 import { resumesRepo } from "./repositories/resumes.js";
-import { createAiService } from "./services/gemini.js";
+import { createAiService } from "./services/ai/index.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
@@ -30,7 +30,7 @@ export function createApp(config, { db, ai = createAiService(config), log = cons
 
   app.get("/api/health", async (_req, res) => {
     await db.command({ ping: 1 });
-    res.json({ status: "ok", aiConfigured: Boolean(config.GEMINI_API_KEY) });
+    res.json({ status: "ok", aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]), aiProvider: config.AI_PROVIDER });
   });
   app.use("/api/auth", authRouter({ config, users, requireAuth, testing }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth }));

@@ -8,8 +8,11 @@ const schema = z.object({
   MONGODB_DB: z.string().default("resume94"),
   JWT_SECRET: z.string().min(16, "JWT_SECRET must be at least 16 characters").optional(),
   JWT_EXPIRES_IN: z.string().default("7d"),
+  AI_PROVIDER: z.enum(["gemini", "groq"]).default("gemini"),
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default("gemini-2.5-flash"),
+  GEMINI_MODEL: z.string().optional(),
+  GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().optional(),
 });
 
 export function loadConfig(env = process.env) {

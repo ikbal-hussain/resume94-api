@@ -1,4 +1,10 @@
-import { HttpError } from "../middleware/errors.js";
+import { HttpError } from "../../middleware/errors.js";
+import { gemini } from "./providers/gemini.js";
+import { groq } from "./providers/groq.js";
+
+// Add a new provider by dropping a { name, envKey, defaultModel, call(prompt, {apiKey, model}, fetchImpl) }
+// module in ./providers and registering it here — nothing else in the app needs to change.
+const PROVIDERS = { gemini, groq };
 
 const SECTION_LABEL = {
   projects: "project",
@@ -8,33 +14,20 @@ const SECTION_LABEL = {
 };
 
 export function createAiService(config, fetchImpl = fetch) {
+  const provider = PROVIDERS[config.AI_PROVIDER];
+  if (!provider) throw new Error(`Unknown AI_PROVIDER "${config.AI_PROVIDER}"`);
+  const apiKey = config[provider.envKey];
+  const model = config[`${provider.name.toUpperCase()}_MODEL`] || provider.defaultModel;
+
   async function generate(prompt) {
-    if (!config.GEMINI_API_KEY) {
-      throw new HttpError(503, "AI features are not configured", "AI_UNAVAILABLE");
-    }
-    let res;
-    try {
-      res = await fetchImpl(
-        `https://generativelanguage.googleapis.com/v1beta/models/${config.GEMINI_MODEL}:generateContent`,
-        {
-          method: "POST",
-          // Key in a header (not the URL) so it never lands in access logs.
-          headers: { "Content-Type": "application/json", "x-goog-api-key": config.GEMINI_API_KEY },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-          signal: AbortSignal.timeout(15_000),
-        }
-      );
-    } catch {
-      throw new HttpError(504, "AI provider timed out", "AI_TIMEOUT");
-    }
-    if (!res.ok) throw new HttpError(502, "AI provider error", "AI_UPSTREAM");
-    const json = await res.json();
-    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!apiKey) throw new HttpError(503, "AI features are not configured", "AI_UNAVAILABLE");
+    const text = await provider.call(prompt, { apiKey, model }, fetchImpl);
     if (!text) throw new HttpError(502, "AI provider returned no content", "AI_UPSTREAM");
     return text;
   }
 
   return {
+    provider: provider.name,
     summary({ role, experience, keySkills }) {
       return generate(
         `Write a plain-text resume professional summary of 4-5 lines for a ${role} with ${experience} of experience. ` +
