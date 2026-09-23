@@ -11,6 +11,8 @@ import { notFound, errorHandler } from "./middleware/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { resumesRouter } from "./routes/resumes.js";
 import { aiRouter } from "./routes/ai.js";
+import swaggerUi from "swagger-ui-express";
+import { buildOpenApiDocument } from "./openapi.js";
 
 // Dependencies (db, ai) are injectable so tests can run against an
 // in-memory database and a fake AI provider.
@@ -35,9 +37,28 @@ export function createApp(config, { db, ai = createAiService(config), log = cons
       service: "resume94-api",
       status: "ok",
       docs: "https://github.com/ikbal-hussain/resume94-api",
+      docsUi: "/api/docs",
+      openapi: "/api/openapi.json",
       health: "/api/health",
     });
   });
+
+  // Interactive docs. Helmet's default CSP blocks swagger-ui's inline styles,
+  // so it is disabled for this subtree only.
+  const openApiDocument = buildOpenApiDocument();
+  app.get("/api/openapi.json", (_req, res) => res.json(openApiDocument));
+  app.use(
+    "/api/docs",
+    (req, res, next) => {
+      res.removeHeader("Content-Security-Policy");
+      next();
+    },
+    swaggerUi.serve,
+    swaggerUi.setup(openApiDocument, {
+      customSiteTitle: "Resume94 API docs",
+      swaggerOptions: { persistAuthorization: true, displayRequestDuration: true },
+    })
+  );
 
   app.get("/api/health", async (_req, res) => {
     await db.command({ ping: 1 });

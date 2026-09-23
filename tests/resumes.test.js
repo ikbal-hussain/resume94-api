@@ -14,7 +14,7 @@ describe("resumes", () => {
     const agent = await signedInAgent(await makeApp());
     const created = await agent.post("/api/resumes").send(sampleResume()).expect(201);
     const id = created.body.resume.id;
-    expect(created.body.resume.data.projects).toEqual(["Engine"]);
+    expect(created.body.resume.data.projects[0]).toMatchObject({ name: "Analytical Engine" });
 
     const list = await agent.get("/api/resumes").expect(200);
     expect(list.body.resumes).toHaveLength(1);

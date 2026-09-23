@@ -1,4 +1,5 @@
 import { ObjectId } from "mongodb";
+import { migrateResumeData } from "../migrateResume.js";
 
 const oid = (id) => (typeof id === "string" && /^[a-f\d]{24}$/i.test(id) ? new ObjectId(id) : null);
 const toSummary = (d) => ({
@@ -8,7 +9,8 @@ const toSummary = (d) => ({
   createdAt: d.createdAt.toISOString(),
   updatedAt: d.updatedAt.toISOString(),
 });
-const toResume = (d) => d && { ...toSummary(d), data: d.data };
+// Documents stored before the structured-sections change are upgraded on read.
+const toResume = (d) => d && { ...toSummary(d), data: migrateResumeData(d.data) };
 
 // Every query includes userId, so another user's resume behaves like "not found".
 export function resumesRepo(db) {

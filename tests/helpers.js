@@ -40,5 +40,11 @@ export async function signedInAgent(app, email = "a@example.com") {
 
 export const sampleResume = (over = {}) => ({
   title: "My Resume",
-  data: { name: "Ada Lovelace", email: "ada@example.com", skills: "JS, SQL", projects: ["Engine"], ...over },
+  data: {
+    name: "Ada Lovelace",
+    email: "ada@example.com",
+    skills: [{ category: "Core", items: ["JS", "SQL"] }],
+    projects: [{ name: "Analytical Engine", bullets: ["Designed the first algorithm"] }],
+    ...over,
+  },
 });
