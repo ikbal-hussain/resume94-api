@@ -1,6 +1,6 @@
 {
-  "functions": {
-    "api/index.js": { "maxDuration": 30 }
-  },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api/index.js" }]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "builds": [{ "src": "api/index.js", "use": "@vercel/node" }],
+  "routes": [{ "src": "/(.*)", "dest": "/api/index.js" }]
 }
