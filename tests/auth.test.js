@@ -5,6 +5,20 @@ import { makeApp, startMongo, stopMongo, signedInAgent } from "./helpers.js";
 beforeAll(startMongo, 120_000);
 afterAll(stopMongo);
 
+describe("service routes", () => {
+  it("answers the bare root with service info instead of an error", async () => {
+    const res = await request(await makeApp()).get("/");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ service: "resume94-api", status: "ok" });
+  });
+
+  it("404s unknown paths as JSON", async () => {
+    const res = await request(await makeApp()).get("/definitely-not-a-route");
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("NOT_FOUND");
+  });
+});
+
 describe("auth", () => {
   it("registers, sets an httpOnly cookie, and never returns the password hash", async () => {
     const res = await request(await makeApp())

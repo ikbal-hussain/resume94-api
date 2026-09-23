@@ -28,6 +28,17 @@ export function createApp(config, { db, ai = createAiService(config), log = cons
   app.use(cookieParser());
   if (!testing) app.use(morgan("tiny"));
 
+  // Opening the bare API domain in a browser should explain what this is,
+  // rather than 404ing as if the deployment were broken.
+  app.get("/", (_req, res) => {
+    res.json({
+      service: "resume94-api",
+      status: "ok",
+      docs: "https://github.com/ikbal-hussain/resume94-api",
+      health: "/api/health",
+    });
+  });
+
   app.get("/api/health", async (_req, res) => {
     await db.command({ ping: 1 });
     res.json({ status: "ok", aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]), aiProvider: config.AI_PROVIDER });
