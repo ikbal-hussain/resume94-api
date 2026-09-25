@@ -7,6 +7,8 @@ import {
   resumeDataSchema,
   summaryRequestSchema,
   improveRequestSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from "./schemas.js";
 
 // Request schemas are derived from the same Zod validators the routes enforce, so the
@@ -116,6 +118,8 @@ export function buildOpenApiDocument() {
         UpdateProfileBody: toSchema(updateProfileSchema),
         SummaryRequest: toSchema(summaryRequestSchema),
         ImproveRequest: toSchema(improveRequestSchema),
+        ForgotPasswordBody: toSchema(forgotPasswordSchema),
+        ResetPasswordBody: toSchema(resetPasswordSchema),
       },
     },
     paths: {
@@ -164,6 +168,52 @@ export function buildOpenApiDocument() {
             200: { description: "Signed in; session cookie set", ...json(userResponse) },
             401: error("Invalid email or password"),
             429: error("Too many attempts (20 per 15 minutes per IP)"),
+          },
+        },
+      },
+      "/auth/forgot-password": {
+        post: {
+          tags: ["Auth"],
+          summary: "Request a password-reset link",
+          description:
+            "Always returns 204, whether or not the address has an account, so this cannot be " +
+            "used to discover who is registered. When the account exists a single-use link is " +
+            "emailed; it expires after RESET_TOKEN_TTL_MINUTES (60 by default).",
+          requestBody: { required: true, ...json(ref("ForgotPasswordBody")) },
+          responses: {
+            204: { description: "Request accepted (sent only if the account exists)" },
+            429: error("Too many reset requests (5 per hour per IP)"),
+          },
+        },
+      },
+      "/auth/reset-password/{token}": {
+        get: {
+          tags: ["Auth"],
+          summary: "Check whether a reset link is still usable",
+          description: "Lets the reset page report an expired link before the user types a new password.",
+          parameters: [
+            { name: "token", in: "path", required: true, schema: { type: "string" }, description: "Token from the emailed link" },
+          ],
+          responses: {
+            200: {
+              description: "Validity of the token",
+              ...json({ type: "object", properties: { valid: { type: "boolean" } } }),
+            },
+          },
+        },
+      },
+      "/auth/reset-password": {
+        post: {
+          tags: ["Auth"],
+          summary: "Set a new password using a reset link",
+          description:
+            "Consumes the token and every other outstanding token for that account, then signs " +
+            "the user in. Sessions issued before the reset stay valid until they expire.",
+          requestBody: { required: true, ...json(ref("ResetPasswordBody")) },
+          responses: {
+            200: { description: "Password changed; session cookie set", ...json(userResponse) },
+            400: error("The link is invalid, already used, or expired"),
+            429: error("Too many reset attempts (5 per hour per IP)"),
           },
         },
       },

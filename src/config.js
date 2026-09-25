@@ -13,6 +13,12 @@ const schema = z.object({
   GEMINI_MODEL: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().optional(),
+  // Password-reset delivery. "console" prints the link to the server log, which is all
+  // local development needs; "resend" sends for real. See services/mail/providers.
+  MAIL_PROVIDER: z.enum(["console", "resend"]).default("console"),
+  RESEND_API_KEY: z.string().optional(),
+  MAIL_FROM: z.string().default("Resume94 <onboarding@resend.dev>"),
+  RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
 });
 
 export function loadConfig(env = process.env) {

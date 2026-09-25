@@ -18,6 +18,15 @@ export const loginSchema = z.object({
 
 export const updateProfileSchema = z.object({ name: z.string().trim().min(1).max(100) });
 
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(254),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().trim().min(20).max(200),
+  password: z.string().min(8, "Password must be at least 8 characters").max(128),
+});
+
 export const experienceItemSchema = z.object({
   company: shortText(120),
   role: shortText(120),

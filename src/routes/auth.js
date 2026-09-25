@@ -3,12 +3,19 @@ import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
 import { COOKIE_NAME, cookieOptions, signToken } from "../middleware/auth.js";
-import { registerSchema, loginSchema, updateProfileSchema } from "../schemas.js";
+import {
+  registerSchema,
+  loginSchema,
+  updateProfileSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from "../schemas.js";
+import { resetPasswordEmail } from "../services/mail/templates/resetPassword.js";
 
 // Used to keep login timing similar whether or not the email exists.
 const DUMMY_HASH = bcrypt.hashSync("dummy-password", 10);
 
-export function authRouter({ config, users, requireAuth, testing }) {
+export function authRouter({ config, users, passwordResets, mail, requireAuth, testing, log = console }) {
   const r = Router();
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -17,6 +24,17 @@ export function authRouter({ config, users, requireAuth, testing }) {
     legacyHeaders: false,
     skip: () => testing,
     message: { error: { code: "RATE_LIMITED", message: "Too many attempts, try again later" } },
+  });
+
+  // Tighter than the shared limiter: each request sends real mail to a third party,
+  // so this endpoint is the one worth abusing.
+  const resetLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => testing,
+    message: { error: { code: "RATE_LIMITED", message: "Too many reset requests, try again later" } },
   });
 
   const startSession = (res, user) => {
@@ -39,6 +57,42 @@ export function authRouter({ config, users, requireAuth, testing }) {
     const ok = await bcrypt.compare(password, row?.passwordHash ?? DUMMY_HASH);
     if (!row || !ok) throw new HttpError(401, "Invalid email or password", "BAD_CREDENTIALS");
     res.json({ user: startSession(res, await users.findById(row._id.toString())) });
+  });
+
+  // Always 204, whether or not the address has an account. Reporting "no such user"
+  // would turn this into a free oracle for discovering who is registered here.
+  r.post("/forgot-password", resetLimiter, validateBody(forgotPasswordSchema), async (req, res) => {
+    const row = await users.findCredentialsByEmail(req.body.email);
+    if (row) {
+      const token = await passwordResets.create(row._id, config.RESET_TOKEN_TTL_MINUTES);
+      const link = `${config.CLIENT_ORIGIN}/reset-password?token=${encodeURIComponent(token)}`;
+      try {
+        await mail.send(
+          resetPasswordEmail({ to: row.email, name: row.name, link, ttlMinutes: config.RESET_TOKEN_TTL_MINUTES })
+        );
+      } catch (err) {
+        // A delivery failure must not change the response, or the timing difference
+        // leaks the same fact the uniform status code is hiding.
+        log.error(`[mail] reset delivery failed: ${err.message}`);
+      }
+    }
+    res.status(204).end();
+  });
+
+  // Lets the reset page say "this link has expired" before the user types a password.
+  r.get("/reset-password/:token", async (req, res) => {
+    res.json({ valid: Boolean(await passwordResets.findValid(req.params.token)) });
+  });
+
+  r.post("/reset-password", resetLimiter, validateBody(resetPasswordSchema), async (req, res) => {
+    const row = await passwordResets.findValid(req.body.token);
+    if (!row) throw new HttpError(400, "This reset link is invalid or has expired", "RESET_TOKEN_INVALID");
+
+    await users.updatePasswordHash(row.userId, await bcrypt.hash(req.body.password, 10));
+    await passwordResets.consume(row.userId); // burns this token and any siblings
+
+    const user = await users.findById(row.userId.toString());
+    res.json({ user: startSession(res, user) }); // signed straight in
   });
 
   r.post("/logout", (_req, res) => {

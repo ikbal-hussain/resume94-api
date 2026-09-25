@@ -21,11 +21,17 @@ export async function stopMongo() {
   await mongod?.stop();
 }
 
-export async function makeApp(overrides = {}) {
+// Captures outgoing mail instead of sending it, so tests can read the reset link.
+export function fakeMailer() {
+  const sent = [];
+  return { sent, provider: "fake", configured: true, async send(m) { sent.push(m); return { id: "fake" }; } };
+}
+
+export async function makeApp(overrides = {}, deps = {}) {
   const config = loadConfig({ NODE_ENV: "test", JWT_SECRET: "test-secret-1234567890", ...overrides });
   const db = client.db(`test_${++n}`);
   await ensureIndexes(db);
-  const app = createApp(config, { db, ai: fakeAi, log: { error() {} } });
+  const app = createApp(config, { db, ai: fakeAi, log: { error() {}, info() {} }, ...deps });
   app.locals.db = db; // exposed for assertions only
   return app;
 }
