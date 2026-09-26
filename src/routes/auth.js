@@ -25,7 +25,7 @@ const padTo = async (floorMs, startedAt, skip) => {
   if (remaining > 0) await sleep(remaining);
 };
 
-export function authRouter({ config, users, passwordResets, mail, requireAuth, testing, log = console }) {
+export function authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log = console }) {
   const r = Router();
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -116,15 +116,25 @@ export function authRouter({ config, users, passwordResets, mail, requireAuth, t
   });
 
   r.post("/reset-password", resetLimiter, validateBody(resetPasswordSchema), async (req, res) => {
-    const row = await passwordResets.findValid(req.body.token);
-    if (!row) throw new HttpError(400, "This reset link is invalid or has expired", "RESET_TOKEN_INVALID");
+    // Hashed before the transaction opens: bcrypt is deliberately slow and holding a
+    // transaction across it would keep locks for no reason.
+    const passwordHash = await bcrypt.hash(req.body.password, 10);
 
-    await users.updatePasswordHash(row.userId, await bcrypt.hash(req.body.password, 10));
-    await passwordResets.consume(row.userId); // burns this token and any siblings
+    // Checking, burning and updating together as one unit. Apart, a crash between the
+    // last two leaves the password changed with every link still live — and two requests
+    // carrying the same token could both pass the check before either burned it.
+    const userId = await withTransaction(async (session) => {
+      const row = await passwordResets.findValid(req.body.token, session);
+      if (!row) throw new HttpError(400, "This reset link is invalid or has expired", "RESET_TOKEN_INVALID");
+
+      await passwordResets.consume(row.userId, session); // this token and any siblings
+      await users.updatePasswordHash(row.userId, passwordHash, session);
+      return row.userId;
+    });
 
     // The account can be deleted between a link being issued and used, which would
     // otherwise leave startSession dereferencing null and returning a 500.
-    const user = await users.findById(row.userId.toString());
+    const user = await users.findById(userId.toString());
     if (!user) throw new HttpError(400, "This reset link is invalid or has expired", "RESET_TOKEN_INVALID");
 
     res.json({ user: startSession(res, user) }); // signed straight in

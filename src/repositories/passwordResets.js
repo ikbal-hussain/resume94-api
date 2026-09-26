@@ -26,15 +26,19 @@ export function passwordResetsRepo(db) {
 
     // Expiry is enforced in the query, not by the TTL index: Mongo's background purge
     // runs about once a minute, so an expired row can briefly still exist.
-    findValid(token) {
-      return col.findOne({ tokenHash: hashToken(token), usedAt: null, expiresAt: { $gt: new Date() } });
+    findValid(token, session) {
+      return col.findOne(
+        { tokenHash: hashToken(token), usedAt: null, expiresAt: { $gt: new Date() } },
+        { session }
+      );
     },
 
     /** Burns the used token and every other outstanding one for that account. */
-    async consume(userId) {
+    async consume(userId, session) {
       const { modifiedCount } = await col.updateMany(
         { userId, usedAt: null },
-        { $set: { usedAt: new Date() } }
+        { $set: { usedAt: new Date() } },
+        { session }
       );
       return modifiedCount;
     },

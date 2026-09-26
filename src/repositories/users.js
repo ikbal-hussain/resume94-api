@@ -24,9 +24,9 @@ export function usersRepo(db) {
     // Raw doc (with passwordHash) — only for credential checks.
     findCredentialsByEmail: (email) => col.findOne({ email }),
     // Takes an already-hashed value; hashing stays in the auth route with the rest of it.
-    async updatePasswordHash(id, passwordHash) {
+    async updatePasswordHash(id, passwordHash, session) {
       const _id = id instanceof ObjectId ? id : oid(id);
-      const { matchedCount } = await col.updateOne({ _id }, { $set: { passwordHash } });
+      const { matchedCount } = await col.updateOne({ _id }, { $set: { passwordHash } }, { session });
       return matchedCount > 0;
     },
     async updateName(id, name) {

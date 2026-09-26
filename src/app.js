@@ -10,6 +10,7 @@ import { createAiService } from "./services/ai/index.js";
 import { createMailService } from "./services/mail/index.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
+import { makeWithTransaction } from "./db.js";
 import { authRouter } from "./routes/auth.js";
 import { resumesRouter } from "./routes/resumes.js";
 import { aiRouter } from "./routes/ai.js";
@@ -19,11 +20,13 @@ import { buildOpenApiDocument } from "./openapi.js";
 // Dependencies (db, ai) are injectable so tests can run against an
 // in-memory database and a fake AI provider.
 // `log` is destructured before `mail` because `mail`'s default reads it.
-export function createApp(config, { db, log = console, ai = createAiService(config), mail = createMailService(config, fetch, log) }) {
+export function createApp(config, { db, client, log = console, ai = createAiService(config), mail = createMailService(config, fetch, log) }) {
   const testing = config.NODE_ENV === "test";
   const users = usersRepo(db);
   const resumes = resumesRepo(db);
   const passwordResets = passwordResetsRepo(db);
+  // Without a client (or on a standalone server) this still runs, just not atomically.
+  const withTransaction = makeWithTransaction(client, log);
   const requireAuth = makeRequireAuth(config, users);
 
   const app = express();
@@ -68,7 +71,7 @@ export function createApp(config, { db, log = console, ai = createAiService(conf
     await db.command({ ping: 1 });
     res.json({ status: "ok", aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]), aiProvider: config.AI_PROVIDER });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, requireAuth, testing, log }));
+  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth }));
   app.use("/api/ai", aiRouter({ ai, requireAuth, testing }));
 

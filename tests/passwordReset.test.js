@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
-import { makeApp, startMongo, stopMongo, fakeMailer } from "./helpers.js";
+import { makeApp, startMongo, stopMongo, fakeMailer, getClient } from "./helpers.js";
 import { hashToken } from "../src/repositories/passwordResets.js";
 import { resetPasswordEmail } from "../src/services/mail/templates/resetPassword.js";
 import { createMailService } from "../src/services/mail/index.js";
@@ -155,6 +155,50 @@ describe("reset link validity probe", () => {
     expect((await request(app).get(`/api/auth/reset-password/${token}`)).body).toEqual({ valid: true });
     await request(app).post("/api/auth/reset-password").send({ token, password: "now-consumed" });
     expect((await request(app).get(`/api/auth/reset-password/${token}`)).body).toEqual({ valid: false });
+  });
+});
+
+describe("atomicity", () => {
+  it("lets only one of two simultaneous requests spend the same token", async () => {
+    const { app, requestReset } = await setup();
+    const { token } = await requestReset();
+
+    // Without a transaction both requests read usedAt: null before either writes it,
+    // and both would succeed — the single-use rule would hold only when nobody raced.
+    const results = await Promise.all([
+      request(app).post("/api/auth/reset-password").send({ token, password: "first-writer-wins" }),
+      request(app).post("/api/auth/reset-password").send({ token, password: "second-writer-loses" }),
+    ]);
+
+    const codes = results.map((r) => r.status).sort();
+    expect(codes).toEqual([200, 400]);
+    expect(results.find((r) => r.status === 400).body.error.code).toBe("RESET_TOKEN_INVALID");
+  });
+
+  it("rolls the burned token back when a later write in the same unit fails", async () => {
+    const { makeWithTransaction } = await import("../src/db.js");
+    const client = getClient();
+    const db = client.db(`txn_${Date.now()}`);
+    const withTransaction = makeWithTransaction(client, { warn() {} });
+    await db.collection("passwordResets").insertOne({ tokenHash: "abc", usedAt: null });
+
+    await expect(
+      withTransaction(async (session) => {
+        await db.collection("passwordResets").updateOne({ tokenHash: "abc" }, { $set: { usedAt: new Date() } }, { session });
+        throw new Error("the password write failed");
+      })
+    ).rejects.toThrow("the password write failed");
+
+    // The token must still be spendable: a half-applied reset is the failure mode
+    // the transaction exists to prevent.
+    const row = await db.collection("passwordResets").findOne({ tokenHash: "abc" });
+    expect(row.usedAt).toBeNull();
+  });
+
+  it("still runs the work when there is no client to open a session with", async () => {
+    const { makeWithTransaction } = await import("../src/db.js");
+    const withTransaction = makeWithTransaction(null);
+    await expect(withTransaction(async () => "ran anyway")).resolves.toBe("ran anyway");
   });
 });
 

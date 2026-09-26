@@ -6,7 +6,7 @@ import { connectDb } from "./db.js";
 const config = loadConfig();
 if (!config.MONGODB_URI) throw new Error("MONGODB_URI is required");
 const { client, db } = await connectDb(config.MONGODB_URI, config.MONGODB_DB);
-const server = createApp(config, { db }).listen(config.PORT, () => {
+const server = createApp(config, { db, client }).listen(config.PORT, () => {
   console.log(`Resume94 API listening on :${config.PORT} (${config.NODE_ENV})`);
 });
 
