@@ -113,14 +113,26 @@ describe("reset-password", () => {
   });
 
   it("rejects an expired token", async () => {
-    // TTL of zero minutes: the row is already past expiresAt when it is written.
-    const { app, requestReset } = await setup({ RESET_TOKEN_TTL_MINUTES: "1" });
+    // Issued normally, then backdated: waiting out a real TTL would stall the suite.
+    const { app, requestReset } = await setup();
     const { token } = await requestReset();
     await app.locals.db
       .collection("passwordResets")
       .updateOne({ tokenHash: hashToken(token) }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
 
     const res = await request(app).post("/api/auth/reset-password").send({ token, password: "too-late-now" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("RESET_TOKEN_INVALID");
+  });
+
+  it("rejects the link cleanly when the account was deleted after it was issued", async () => {
+    const { app, requestReset } = await setup();
+    const { token } = await requestReset();
+    // Remove the account but leave the token, which is the state a mid-flight
+    // deletion produces; a null user here used to reach startSession and 500.
+    await app.locals.db.collection("users").deleteMany({});
+
+    const res = await request(app).post("/api/auth/reset-password").send({ token, password: "no-account-now" });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("RESET_TOKEN_INVALID");
   });
@@ -143,6 +155,32 @@ describe("reset link validity probe", () => {
     expect((await request(app).get(`/api/auth/reset-password/${token}`)).body).toEqual({ valid: true });
     await request(app).post("/api/auth/reset-password").send({ token, password: "now-consumed" });
     expect((await request(app).get(`/api/auth/reset-password/${token}`)).body).toEqual({ valid: false });
+  });
+});
+
+describe("account deletion", () => {
+  it("takes outstanding reset tokens with it", async () => {
+    const { app, requestReset } = await setup();
+    await requestReset();
+    expect(await app.locals.db.collection("passwordResets").countDocuments()).toBe(1);
+
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: EMAIL, password: "password123" });
+    await agent.delete("/api/auth/me").expect(204);
+
+    // A live token must not outlive the account it unlocks.
+    expect(await app.locals.db.collection("passwordResets").countDocuments()).toBe(0);
+  });
+});
+
+describe("configuration", () => {
+  it("refuses to boot in production with the console transport", async () => {
+    const { loadConfig } = await import("../src/config.js");
+    const env = { NODE_ENV: "production", JWT_SECRET: "x".repeat(32), MAIL_PROVIDER: "console" };
+
+    // Reset links in a log are working credentials for anyone who can read the log.
+    expect(() => loadConfig(env)).toThrow(/console.*log|log.*console/i);
+    expect(() => loadConfig({ ...env, MAIL_PROVIDER: "resend" })).not.toThrow();
   });
 });
 

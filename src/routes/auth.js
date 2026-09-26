@@ -15,6 +15,16 @@ import { resetPasswordEmail } from "../services/mail/templates/resetPassword.js"
 // Used to keep login timing similar whether or not the email exists.
 const DUMMY_HASH = bcrypt.hashSync("dummy-password", 10);
 
+// Floor for the forgot-password response, comfortably above a typical provider round
+// trip so both the registered and unknown paths take about the same time.
+const RESPONSE_FLOOR_MS = 600;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const padTo = async (floorMs, startedAt, skip) => {
+  if (skip) return; // tests would otherwise pay the floor on every call
+  const remaining = floorMs - (Date.now() - startedAt);
+  if (remaining > 0) await sleep(remaining);
+};
+
 export function authRouter({ config, users, passwordResets, mail, requireAuth, testing, log = console }) {
   const r = Router();
   const limiter = rateLimit({
@@ -35,6 +45,17 @@ export function authRouter({ config, users, passwordResets, mail, requireAuth, t
     legacyHeaders: false,
     skip: () => testing,
     message: { error: { code: "RATE_LIMITED", message: "Too many reset requests, try again later" } },
+  });
+
+  // Generous by comparison: one page load spends a single call, but the endpoint is
+  // unauthenticated, so it should not be an unmetered route to the database.
+  const probeLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: () => testing,
+    message: { error: { code: "RATE_LIMITED", message: "Too many attempts, try again later" } },
   });
 
   const startSession = (res, user) => {
@@ -61,7 +82,14 @@ export function authRouter({ config, users, passwordResets, mail, requireAuth, t
 
   // Always 204, whether or not the address has an account. Reporting "no such user"
   // would turn this into a free oracle for discovering who is registered here.
+  //
+  // The status code alone is not enough: a registered address costs a token insert and
+  // a round trip to the mail provider, an unknown one costs nothing, and that gap is
+  // large enough to measure. Both paths are therefore held to a common floor. A send
+  // slower than the floor still shows through — removing the signal completely means
+  // handing delivery to a job queue and answering before it runs.
   r.post("/forgot-password", resetLimiter, validateBody(forgotPasswordSchema), async (req, res) => {
+    const startedAt = Date.now();
     const row = await users.findCredentialsByEmail(req.body.email);
     if (row) {
       const token = await passwordResets.create(row._id, config.RESET_TOKEN_TTL_MINUTES);
@@ -76,11 +104,14 @@ export function authRouter({ config, users, passwordResets, mail, requireAuth, t
         log.error(`[mail] reset delivery failed: ${err.message}`);
       }
     }
+    await padTo(RESPONSE_FLOOR_MS, startedAt, testing);
     res.status(204).end();
   });
 
   // Lets the reset page say "this link has expired" before the user types a password.
-  r.get("/reset-password/:token", async (req, res) => {
+  // Limited too: it is unauthenticated and hits the database on every call, and the
+  // reset limiter above does not cover it.
+  r.get("/reset-password/:token", probeLimiter, async (req, res) => {
     res.json({ valid: Boolean(await passwordResets.findValid(req.params.token)) });
   });
 
@@ -91,7 +122,11 @@ export function authRouter({ config, users, passwordResets, mail, requireAuth, t
     await users.updatePasswordHash(row.userId, await bcrypt.hash(req.body.password, 10));
     await passwordResets.consume(row.userId); // burns this token and any siblings
 
+    // The account can be deleted between a link being issued and used, which would
+    // otherwise leave startSession dereferencing null and returning a 500.
     const user = await users.findById(row.userId.toString());
+    if (!user) throw new HttpError(400, "This reset link is invalid or has expired", "RESET_TOKEN_INVALID");
+
     res.json({ user: startSession(res, user) }); // signed straight in
   });
 

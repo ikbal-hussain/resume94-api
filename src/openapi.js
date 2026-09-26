@@ -182,6 +182,7 @@ export function buildOpenApiDocument() {
           requestBody: { required: true, ...json(ref("ForgotPasswordBody")) },
           responses: {
             204: { description: "Request accepted (sent only if the account exists)" },
+            400: error("The email field is missing or malformed"),
             429: error("Too many reset requests (5 per hour per IP)"),
           },
         },

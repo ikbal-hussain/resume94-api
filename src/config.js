@@ -30,5 +30,12 @@ export function loadConfig(env = process.env) {
     // Dev/test convenience only: sessions won't survive a restart.
     cfg.JWT_SECRET = "dev-only-insecure-secret-" + Math.random().toString(36).slice(2);
   }
+  // A reset link in a log is a working credential for whoever can read the log, so the
+  // console transport must never be what production falls back to by default.
+  if (cfg.NODE_ENV === "production" && cfg.MAIL_PROVIDER === "console") {
+    throw new Error(
+      'MAIL_PROVIDER="console" writes live password-reset links to the log; set a real transport in production'
+    );
+  }
   return cfg;
 }

@@ -36,7 +36,12 @@ export function usersRepo(db) {
     async delete(id) {
       const _id = oid(id);
       const { deletedCount } = await col.deleteOne({ _id });
-      if (deletedCount) await db.collection("resumes").deleteMany({ userId: _id }); // manual cascade
+      if (deletedCount) {
+        // Manual cascade. Reset tokens go too: a live one would otherwise outlive the
+        // account and hit a user lookup that no longer resolves.
+        await db.collection("resumes").deleteMany({ userId: _id });
+        await db.collection("passwordResets").deleteMany({ userId: _id });
+      }
       return deletedCount > 0;
     },
   };
