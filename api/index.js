@@ -9,8 +9,8 @@ let appPromise;
 async function init() {
   const config = loadConfig();
   if (!config.MONGODB_URI) throw new Error("MONGODB_URI is required");
-  const { db } = await connectDb(config.MONGODB_URI, config.MONGODB_DB);
-  return createApp(config, { db });
+  const { db, client } = await connectDb(config.MONGODB_URI, config.MONGODB_DB);
+  return createApp(config, { db, client });
 }
 
 export default async function handler(req, res) {

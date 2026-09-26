@@ -1,7 +1,7 @@
 import request from "supertest";
 import { createApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { MongoClient } from "mongodb";
 import { ensureIndexes } from "../src/db.js";
 
@@ -11,21 +11,32 @@ export const fakeAi = {
 };
 
 // One in-memory MongoDB per test file; each makeApp() gets a fresh database.
+// A single-node replica set rather than a standalone: transactions need one, and the
+// reset flow should be exercised on the same footing as Atlas.
 let mongod, client, n = 0;
 export async function startMongo() {
-  mongod = await MongoMemoryServer.create();
+  mongod = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   client = await new MongoClient(mongod.getUri()).connect();
 }
+/** The shared MongoClient, for tests that need a session of their own. */
+export const getClient = () => client;
+
 export async function stopMongo() {
   await client?.close();
   await mongod?.stop();
 }
 
-export async function makeApp(overrides = {}) {
+// Captures outgoing mail instead of sending it, so tests can read the reset link.
+export function fakeMailer() {
+  const sent = [];
+  return { sent, provider: "fake", configured: true, async send(m) { sent.push(m); return { id: "fake" }; } };
+}
+
+export async function makeApp(overrides = {}, deps = {}) {
   const config = loadConfig({ NODE_ENV: "test", JWT_SECRET: "test-secret-1234567890", ...overrides });
   const db = client.db(`test_${++n}`);
   await ensureIndexes(db);
-  const app = createApp(config, { db, ai: fakeAi, log: { error() {} } });
+  const app = createApp(config, { db, client, ai: fakeAi, log: { error() {}, info() {}, warn() {} }, ...deps });
   app.locals.db = db; // exposed for assertions only
   return app;
 }

@@ -23,6 +23,12 @@ export function usersRepo(db) {
     },
     // Raw doc (with passwordHash) — only for credential checks.
     findCredentialsByEmail: (email) => col.findOne({ email }),
+    // Takes an already-hashed value; hashing stays in the auth route with the rest of it.
+    async updatePasswordHash(id, passwordHash, session) {
+      const _id = id instanceof ObjectId ? id : oid(id);
+      const { matchedCount } = await col.updateOne({ _id }, { $set: { passwordHash } }, { session });
+      return matchedCount > 0;
+    },
     async updateName(id, name) {
       const d = await col.findOneAndUpdate({ _id: oid(id) }, { $set: { name } }, { returnDocument: "after" });
       return toUser(d);
@@ -30,7 +36,12 @@ export function usersRepo(db) {
     async delete(id) {
       const _id = oid(id);
       const { deletedCount } = await col.deleteOne({ _id });
-      if (deletedCount) await db.collection("resumes").deleteMany({ userId: _id }); // manual cascade
+      if (deletedCount) {
+        // Manual cascade. Reset tokens go too: a live one would otherwise outlive the
+        // account and hit a user lookup that no longer resolves.
+        await db.collection("resumes").deleteMany({ userId: _id });
+        await db.collection("passwordResets").deleteMany({ userId: _id });
+      }
       return deletedCount > 0;
     },
   };
