@@ -127,7 +127,9 @@ export function buildOpenApiDocument() {
         get: {
           tags: ["Service"],
           summary: "Liveness and configuration check",
-          description: "Pings MongoDB and reports which AI provider is configured.",
+          description:
+            "Pings MongoDB and reports which build is answering and whether the AI and " +
+            "mail transports are configured. Used by the post-deploy smoke test.",
           responses: {
             200: {
               description: "Service is healthy",
@@ -135,8 +137,15 @@ export function buildOpenApiDocument() {
                 type: "object",
                 properties: {
                   status: { type: "string", example: "ok" },
+                  commit: {
+                    type: "string",
+                    nullable: true,
+                    description: "Git SHA of the running deployment, or null outside Vercel",
+                  },
                   aiConfigured: { type: "boolean" },
                   aiProvider: { type: "string", enum: ["gemini", "groq"] },
+                  mailConfigured: { type: "boolean" },
+                  mailProvider: { type: "string", enum: ["console", "resend"] },
                 },
               }),
             },

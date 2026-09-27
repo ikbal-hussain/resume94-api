@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "test": "vitest run",
     "lint": "eslint .",
-    "models:groq": "node --env-file-if-exists=.env scripts/list-models.js"
+    "models:groq": "node --env-file-if-exists=.env scripts/list-models.js",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
