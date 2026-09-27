@@ -20,10 +20,19 @@ const EXPECT_COMMIT = process.env.SMOKE_EXPECT_COMMIT || null;
 const DEPLOY_TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS ?? 300_000);
 const POLL_INTERVAL_MS = 10_000;
 
+// Nothing else can interrupt a request that never resolves: the deploy deadline is
+// only checked between polls, so a hung connection would stall the whole job rather
+// than failing it. Every request carries its own timeout.
+const REQUEST_TIMEOUT_MS = Number(process.env.SMOKE_REQUEST_TIMEOUT_MS ?? 15_000);
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const get = async (path, init) => {
-  const res = await fetch(`${BASE_URL}${path}`, { redirect: "manual", ...init });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    ...init,
+  });
   const text = await res.text();
   let body = null;
   try {
@@ -124,7 +133,10 @@ async function run() {
   });
 
   await check("reset: token probe answers", async () => {
-    const { status, body } = await get("/api/auth/reset-password/validate?token=smoke-test-not-a-token");
+    // The token is a PATH segment, not a query parameter. Sending it as a query put the
+    // literal string "validate" in the token position, which still answered {valid:false}
+    // and so passed while testing a route shape the app does not have.
+    const { status, body } = await get("/api/auth/reset-password/smoke-test-not-a-token");
     expect(status === 200, `expected 200, got ${status}`);
     expect(body?.valid === false, `valid was ${body?.valid}`);
     return "valid:false";
