@@ -31,9 +31,15 @@ export function docsGuard(config) {
 
     const [scheme, encoded] = (req.headers.authorization || "").split(" ");
     if (scheme === "Basic" && encoded) {
-      const [given, givenPassword] = Buffer.from(encoded, "base64").toString().split(":");
-      if (given && givenPassword && matches(given, user) && matches(givenPassword, password)) {
-        return next();
+      // Split on the FIRST colon only. RFC 7617 bars a colon in the username but
+      // allows one in the password, so splitting on every colon would truncate any
+      // password containing one and make it permanently unusable.
+      const decoded = Buffer.from(encoded, "base64").toString();
+      const separator = decoded.indexOf(":");
+      if (separator !== -1) {
+        const givenUser = decoded.slice(0, separator);
+        const givenPassword = decoded.slice(separator + 1);
+        if (matches(givenUser, user) && matches(givenPassword, password)) return next();
       }
     }
 

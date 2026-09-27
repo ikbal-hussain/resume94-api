@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 const schema = z.object({
-  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  // Defaults to production so an unset NODE_ENV fails closed. Four security
+  // behaviours key off this — the docs guard, the cookie Secure flag, the refusal
+  // of the console mail transport, and whether JWT_SECRET is mandatory — and a
+  // development default silently relaxed all of them on any host that leaves it
+  // unset. Local work sets it in .env; the test helpers set it explicitly.
+  NODE_ENV: z.enum(["development", "test", "production"]).default("production"),
   PORT: z.coerce.number().default(4100),
   CLIENT_ORIGIN: z.string().default("http://localhost:5173"),
   MONGODB_URI: z.string().optional(),
@@ -29,7 +34,10 @@ export function loadConfig(env = process.env) {
   const cfg = schema.parse(env);
   if (!cfg.JWT_SECRET) {
     if (cfg.NODE_ENV === "production") {
-      throw new Error("JWT_SECRET is required in production");
+      throw new Error(
+        "JWT_SECRET is required in production. If this is a local run, set NODE_ENV=development " +
+          "in .env (copy .env.example) — NODE_ENV defaults to production so an unset value fails closed."
+      );
     }
     // Dev/test convenience only: sessions won't survive a restart.
     cfg.JWT_SECRET = "dev-only-insecure-secret-" + Math.random().toString(36).slice(2);
