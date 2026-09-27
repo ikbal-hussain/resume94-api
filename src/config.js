@@ -28,6 +28,10 @@ const schema = z.object({
   // not served there at all.
   DOCS_USER: z.string().optional(),
   DOCS_PASSWORD: z.string().optional(),
+  // Injected by Vercel. Reported on /api/health so the post-deploy smoke test can
+  // tell the new deployment apart from the one it is replacing, instead of passing
+  // against the old build and declaring a broken release healthy.
+  VERCEL_GIT_COMMIT_SHA: z.string().optional(),
 });
 
 export function loadConfig(env = process.env) {

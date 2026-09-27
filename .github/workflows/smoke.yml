@@ -1,0 +1,24 @@
+name: Production smoke
+# The unit suite proves the code is correct; this proves the deployment is alive.
+# Runs after CI on main, against the real Vercel deployment, and waits for the
+# pushed commit to be the one answering before it asserts anything.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node scripts/smoke.mjs
+        env:
+          BASE_URL: https://resume94-api.vercel.app
+          # Only a push to main produces a commit that will actually be deployed. A manual
+          # run can be started from any ref, and waiting for a SHA that was never deployed
+          # would fail against a perfectly healthy service — so it tests whatever is live.
+          SMOKE_EXPECT_COMMIT: ${{ github.event_name == 'push' && github.sha || '' }}

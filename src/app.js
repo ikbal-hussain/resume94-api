@@ -68,9 +68,20 @@ export function createApp(config, { db, client, log = console, ai = createAiServ
     })
   );
 
+  // Everything the post-deploy smoke test needs to judge a release: which build is
+  // answering, and whether each dependency it cannot reach from outside is wired up.
+  // mail is included deliberately -- a MAIL_PROVIDER left at "console" in production
+  // is invisible from any other endpoint until someone requests a password reset.
   app.get("/api/health", async (_req, res) => {
     await db.command({ ping: 1 });
-    res.json({ status: "ok", aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]), aiProvider: config.AI_PROVIDER });
+    res.json({
+      status: "ok",
+      commit: config.VERCEL_GIT_COMMIT_SHA ?? null,
+      aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]),
+      aiProvider: config.AI_PROVIDER,
+      mailConfigured: mail.configured,
+      mailProvider: mail.provider,
+    });
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, testing }));
