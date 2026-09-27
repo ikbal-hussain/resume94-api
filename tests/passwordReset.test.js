@@ -218,13 +218,29 @@ describe("account deletion", () => {
 });
 
 describe("configuration", () => {
-  it("refuses to boot in production with the console transport", async () => {
+  it("refuses the console transport in production without taking the API down", async () => {
     const { loadConfig } = await import("../src/config.js");
     const env = { NODE_ENV: "production", JWT_SECRET: "x".repeat(32), MAIL_PROVIDER: "console" };
 
-    // Reset links in a log are working credentials for anyone who can read the log.
-    expect(() => loadConfig(env)).toThrow(/console.*log|log.*console/i);
-    expect(() => loadConfig({ ...env, MAIL_PROVIDER: "resend" })).not.toThrow();
+    // Booting must still succeed: auth, resumes and AI do not depend on mail.
+    const config = loadConfig(env);
+    expect(config.MAIL_PROVIDER).toBe("console");
+
+    // Sending must not: reset links in a log are working credentials for any reader.
+    const mail = createMailService(config, fetch, { error() {} });
+    expect(mail.configured).toBe(false);
+    await expect(mail.send({ to: EMAIL, subject: "s", text: "t" })).rejects.toThrow(/refused in production/);
+  });
+
+  it("allows the console transport outside production", async () => {
+    const { loadConfig } = await import("../src/config.js");
+    const mail = createMailService(loadConfig({ NODE_ENV: "development", MAIL_PROVIDER: "console" }), fetch, {
+      error() {},
+      info() {},
+    });
+
+    expect(mail.configured).toBe(true);
+    await expect(mail.send({ to: EMAIL, subject: "s", text: "t" })).resolves.toBeTruthy();
   });
 });
 
