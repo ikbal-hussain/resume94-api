@@ -51,6 +51,7 @@ export const errorHandler = (log) => (err, req, res, _next) => {
     return res.status(400).json({ error: { code: "BAD_JSON", message: "Malformed JSON" } });
   }
   if (err instanceof HttpError) {
+    if (err.headers) res.set(err.headers); // e.g. the WWW-Authenticate challenge
     return res.status(err.status).json({ error: { code: err.code || "ERROR", message: err.message } });
   }
   log.error(err);

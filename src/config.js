@@ -19,6 +19,10 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   MAIL_FROM: z.string().default("Resume94 <onboarding@resend.dev>"),
   RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  // Basic-auth credentials for /api/docs in production. Unset means the docs are
+  // not served there at all.
+  DOCS_USER: z.string().optional(),
+  DOCS_PASSWORD: z.string().optional(),
 });
 
 export function loadConfig(env = process.env) {
