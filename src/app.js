@@ -11,6 +11,7 @@ import { createMailService } from "./services/mail/index.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { makeWithTransaction } from "./db.js";
+import { docsGuard } from "./middleware/docsAuth.js";
 import { authRouter } from "./routes/auth.js";
 import { resumesRouter } from "./routes/resumes.js";
 import { aiRouter } from "./routes/ai.js";
@@ -44,8 +45,6 @@ export function createApp(config, { db, client, log = console, ai = createAiServ
       service: "resume94-api",
       status: "ok",
       docs: "https://github.com/ikbal-hussain/resume94-api",
-      docsUi: "/api/docs",
-      openapi: "/api/openapi.json",
       health: "/api/health",
     });
   });
@@ -53,9 +52,11 @@ export function createApp(config, { db, client, log = console, ai = createAiServ
   // Interactive docs. Helmet's default CSP blocks swagger-ui's inline styles,
   // so it is disabled for this subtree only.
   const openApiDocument = buildOpenApiDocument();
-  app.get("/api/openapi.json", (_req, res) => res.json(openApiDocument));
+  const docs = docsGuard(config);
+  app.get("/api/openapi.json", docs, (_req, res) => res.json(openApiDocument));
   app.use(
     "/api/docs",
+    docs,
     (req, res, next) => {
       res.removeHeader("Content-Security-Policy");
       next();
@@ -72,7 +73,7 @@ export function createApp(config, { db, client, log = console, ai = createAiServ
     res.json({ status: "ok", aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]), aiProvider: config.AI_PROVIDER });
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log }));
-  app.use("/api/resumes", resumesRouter({ resumes, requireAuth }));
+  app.use("/api/resumes", resumesRouter({ resumes, requireAuth, testing }));
   app.use("/api/ai", aiRouter({ ai, requireAuth, testing }));
 
   app.use(notFound);

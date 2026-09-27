@@ -1,10 +1,25 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
 import { resumeBodySchema } from "../schemas.js";
 
-export function resumesRouter({ resumes, requireAuth }) {
+export function resumesRouter({ resumes, requireAuth, testing }) {
   const r = Router();
   r.use(requireAuth);
+
+  // Authenticated, but every write still carries a document up to 2MB. Generous
+  // enough that editing never trips it, low enough to bound what one account costs.
+  r.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: 300,
+      standardHeaders: true,
+      legacyHeaders: false,
+      skip: () => testing,
+      keyGenerator: (req) => req.user?.id ?? req.ip, // per account, not per IP
+      message: { error: { code: "RATE_LIMITED", message: "Too many requests, slow down a moment" } },
+    })
+  );
 
   const idOf = (req) => req.params.id; // repo treats malformed ids as "not found"
   const found = (resume) => {
