@@ -7,7 +7,9 @@
       "use": "@vercel/node",
       "config": {
         "_comment": "swagger-ui serves its bundle from disk via express.static. Vercel traces JS imports only, so these assets must be requested explicitly or /api/docs loads with no scripts.",
-        "includeFiles": "node_modules/swagger-ui-dist/**"
+        "includeFiles": "node_modules/swagger-ui-dist/**",
+        "_comment_duration": "POST /api/ai/import sends a whole resume to the provider and waits for a whole resume back, which does not fit in the 10s default. The provider call has its own 45s timeout, so this is the outer bound, not the expected duration.",
+        "maxDuration": 60
       }
     }
   ],

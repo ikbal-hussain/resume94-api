@@ -7,20 +7,35 @@ export const groq = {
   envKey: "GROQ_API_KEY",
   defaultModel: "openai/gpt-oss-120b",
 
-  async call(prompt, { apiKey, model }, fetchImpl) {
+  async call(prompt, { apiKey, model, json = false, temperature = 0.7, timeoutMs = 15_000 }, fetchImpl) {
     let res;
     try {
       res = await fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], temperature: 0.7 }),
-        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature,
+          // Constrained decoding, so the reply is a JSON object rather than one wrapped
+          // in prose or a ``` fence. The caller still parses defensively.
+          ...(json ? { response_format: { type: "json_object" } } : {}),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new HttpError(504, "AI provider timed out", "AI_TIMEOUT");
     }
     if (!res.ok) throw await upstreamFailure("groq", model, res);
-    const json = await res.json();
-    return json?.choices?.[0]?.message?.content?.trim();
+    // A 200 carrying something other than JSON -- a proxy's HTML error page, a truncated
+    // body -- would otherwise throw past the error handling and surface as a generic 500,
+    // which says nothing about where the failure actually was.
+    let payload;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new HttpError(502, "The groq response could not be read", "AI_UPSTREAM");
+    }
+    return payload?.choices?.[0]?.message?.content?.trim();
   },
 };

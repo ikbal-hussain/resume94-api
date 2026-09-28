@@ -8,6 +8,7 @@ import { ensureIndexes } from "../src/db.js";
 export const fakeAi = {
   summary: async () => "A great summary.",
   improve: async ({ content }) => `- improved: ${content}`,
+  parseResume: async () => ({ name: "Ada Lovelace", experience: [{ company: "Analytical Engines Ltd" }] }),
 };
 
 // One in-memory MongoDB per test file; each makeApp() gets a fresh database.
