@@ -42,7 +42,12 @@ export function aiRouter({ ai, requireAuth, testing }) {
     },
   });
 
-  r.post("/import", importLimiter, validateBody(importResumeSchema), async (req, res) => {
+  // Validation runs BEFORE the limiter. The limiter exists to cap provider spend, and a
+  // request that fails validation never reaches a provider — charging it against a
+  // five-per-ten-minutes budget would let a client bug lock someone out of importing
+  // for ten minutes without a single call having been made. Malformed requests are
+  // still bounded by the router-wide limit above.
+  r.post("/import", validateBody(importResumeSchema), importLimiter, async (req, res) => {
     res.json({ data: await ai.parseResume(req.body) });
   });
   return r;

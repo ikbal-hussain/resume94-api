@@ -24,6 +24,23 @@ Every entry below corresponds to work that actually reached `main`.
 - The serverless function's `maxDuration` is raised to 60s. An import waits on a whole
   resume coming back from the provider, which does not fit in the 10s default.
 
+### Security
+- The prompt fence markers are stripped from user content before it is fenced. Text
+  containing `CONTENT>>>` would previously have closed the fence early, leaving the
+  rest of itself to be read as prompt. Affects `/ai/improve` as well as the new import.
+
+### Fixed
+- A provider responding 200 with a non-JSON body now reports `AI_UPSTREAM` (502)
+  instead of throwing past the error handler as a generic 500.
+- Import requests are validated before the rate limiter is consulted, so a malformed
+  request can no longer spend an import from the 5-per-10-minutes budget without a
+  provider call having been made.
+- A reply is parsed as-is before falling back to slicing between braces, so a brace in
+  a preamble can no longer drag the slice backwards and fail an otherwise valid answer.
+- The import's documented response is `ImportedResumeData` rather than `ResumeData`.
+  It never returns `templateId`, `accentColor`, `sectionOrder` or `profileImage`, and
+  the schema said otherwise.
+
 ### Known
 - The function is deployed to `iad1` (Washington DC) while MongoDB Atlas is in
   `ap-south-1` (Mumbai), costing ~200 ms per database round trip. Measured. The fix is

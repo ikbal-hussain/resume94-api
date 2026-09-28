@@ -159,7 +159,14 @@ const looseList = (max, maxLen) =>
 
 const looseBool = z.preprocess((v) => v === true || v === "true" || v === "yes", z.boolean().default(false));
 
-/** Parses each entry on its own, dropping any that is not an object at all. */
+/**
+ * Parses each entry on its own, dropping any that is not an object at all.
+ *
+ * The target is `z.array(item)` rather than `z.array(z.any())`, even though the
+ * preprocess has already parsed every entry. Re-parsing is idempotent — each field
+ * coerces to itself the second time — and it means the generated OpenAPI schema
+ * describes the real entry shape instead of "an array of anything".
+ */
 const looseEntries = (item, max) =>
   z.preprocess((v) => {
     if (!Array.isArray(v)) return [];
@@ -170,7 +177,7 @@ const looseEntries = (item, max) =>
       if (kept.length === max) break;
     }
     return kept;
-  }, z.array(z.any()).default([]));
+  }, z.array(item).default([]));
 
 const parsedExperienceSchema = z.object({
   company: loose(120),

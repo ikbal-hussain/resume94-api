@@ -8,6 +8,7 @@ import {
   summaryRequestSchema,
   improveRequestSchema,
   importResumeSchema,
+  parsedResumeSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "./schemas.js";
@@ -17,6 +18,17 @@ import {
 const toSchema = (schema) => {
   // OpenAPI 3.0 rejects the top-level $schema keyword that Zod emits.
   const { $schema, ...rest } = z.toJSONSchema(schema, { io: "input" });
+  return rest;
+};
+
+/**
+ * For a schema that only ever describes a response.
+ *
+ * `io: "output"` rather than "input": these are the values after defaults and coercion
+ * have been applied, which is what the client actually receives.
+ */
+const toResponseSchema = (schema) => {
+  const { $schema, ...rest } = z.toJSONSchema(schema, { io: "output" });
   return rest;
 };
 
@@ -120,6 +132,10 @@ export function buildOpenApiDocument() {
         SummaryRequest: toSchema(summaryRequestSchema),
         ImproveRequest: toSchema(improveRequestSchema),
         ImportRequest: toSchema(importResumeSchema),
+        // Content fields only. Deliberately NOT ResumeData: the import never returns
+        // templateId, accentColor, sectionOrder or profileImage, because those are
+        // presentation and are not something a model should be guessing at.
+        ImportedResumeData: toResponseSchema(parsedResumeSchema),
         ForgotPasswordBody: toSchema(forgotPasswordSchema),
         ResetPasswordBody: toSchema(resetPasswordSchema),
       },
@@ -373,8 +389,8 @@ export function buildOpenApiDocument() {
             "Takes the plain text of a resume the user already has and returns it in the shape " +
             "of `ResumeData`, so it can be reviewed and saved as a new resume.\n\n" +
             "The text is extracted in the browser — this endpoint never receives a file. " +
-            "Only content fields are returned; template, accent colour, section order and " +
-            "profile photo are presentation and are not guessed.\n\n" +
+            "Only content fields are returned (`ImportedResumeData`); template, accent colour, " +
+            "section order and profile photo are presentation and are not guessed.\n\n" +
             "The model is told to copy and never invent, and runs at temperature 0. Its answer " +
             "is parsed permissively: a field it returns in the wrong shape is coerced or " +
             "dropped rather than failing the whole import.\n\n" +
@@ -385,7 +401,7 @@ export function buildOpenApiDocument() {
           responses: {
             200: {
               description: "The extracted resume content",
-              ...json({ type: "object", properties: { data: ref("ResumeData") } }),
+              ...json({ type: "object", properties: { data: ref("ImportedResumeData") } }),
             },
             400: error("The text is shorter than 200 characters or longer than 20,000"),
             401: unauthorized,

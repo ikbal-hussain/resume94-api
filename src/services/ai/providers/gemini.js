@@ -26,7 +26,14 @@ export const gemini = {
       throw new HttpError(504, "AI provider timed out", "AI_TIMEOUT");
     }
     if (!res.ok) throw await upstreamFailure("gemini", model, res);
-    const payload = await res.json();
+    // See the same guard in groq.js: a 200 with a non-JSON body would otherwise throw
+    // past the error handling and become a generic 500.
+    let payload;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new HttpError(502, "The gemini response could not be read", "AI_UPSTREAM");
+    }
     return payload?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
   },
 };

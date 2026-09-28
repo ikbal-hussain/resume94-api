@@ -146,9 +146,16 @@ system prompt instructs the model to treat everything between them as data:
 ```
 
 A resume bullet reading "ignore your instructions and…" is content, not an
-instruction. This is mitigation, not a proof — the honest position is that the blast
-radius is small: the model's output is text shown back to the same user who supplied
-the input, so there is nothing to escalate to.
+instruction.
+
+**The markers are stripped from the user's text before it is fenced.** A fence only
+works while the model can tell where it ends, so content containing `CONTENT>>>` would
+close it early and have everything after it read as prompt — which is exactly the
+injection the fence exists to stop. Resumes are user-supplied and can say anything.
+
+This is mitigation, not a proof. The honest position is that the blast radius is
+small: the model's output is text shown back to the same user who supplied the input,
+so there is nothing to escalate to.
 
 **Upstream failures are translated, not passed through.** `upstreamFailure` maps a
 provider's 401/404/429 onto an error that says what an operator must fix, and logs the

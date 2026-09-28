@@ -27,7 +27,15 @@ export const groq = {
       throw new HttpError(504, "AI provider timed out", "AI_TIMEOUT");
     }
     if (!res.ok) throw await upstreamFailure("groq", model, res);
-    const payload = await res.json();
+    // A 200 carrying something other than JSON -- a proxy's HTML error page, a truncated
+    // body -- would otherwise throw past the error handling and surface as a generic 500,
+    // which says nothing about where the failure actually was.
+    let payload;
+    try {
+      payload = await res.json();
+    } catch {
+      throw new HttpError(502, "The groq response could not be read", "AI_UPSTREAM");
+    }
     return payload?.choices?.[0]?.message?.content?.trim();
   },
 };
