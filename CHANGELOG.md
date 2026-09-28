@@ -9,8 +9,20 @@ Every entry below corresponds to work that actually reached `main`.
 ## [Unreleased]
 
 ### Added
+- `POST /api/ai/import` — parses the plain text of an existing resume into the app's
+  structured shape, so a user can start from a resume they already have. The text is
+  extracted in the browser, so the endpoint never handles a file. The model runs at
+  temperature 0 and is told to copy rather than invent; its answer is parsed
+  permissively, so one badly shaped field costs that field rather than the whole
+  import. Limited to 5 requests per 10 minutes per user.
+- JSON mode, temperature and per-call timeouts in the provider interface
+  (`response_format` for Groq, `responseMimeType` for Gemini).
 - `AGENTS.md`, `CLAUDE.md` and `ARCHITECTURE.md` — conventions for contributors and
   coding agents, and a written account of how the system works and why.
+
+### Changed
+- The serverless function's `maxDuration` is raised to 60s. An import waits on a whole
+  resume coming back from the provider, which does not fit in the 10s default.
 
 ### Known
 - The function is deployed to `iad1` (Washington DC) while MongoDB Atlas is in

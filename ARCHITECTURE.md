@@ -155,6 +155,40 @@ provider's 401/404/429 onto an error that says what an operator must fix, and lo
 provider's body server-side. A rejected key is a config problem, and reporting it as
 "something went wrong" wastes the next hour.
 
+### Importing an existing resume
+
+`POST /api/ai/import` takes the **plain text** of a resume the user already has and
+returns it in the app's structured shape.
+
+It never receives a file. The browser already ships pdf.js for the live preview, so it
+extracts the text there and sends a few kilobytes of string. That keeps multipart
+parsing, temporary files and a 5 MB upload entirely out of a serverless function, and
+it means a PDF that yields almost no text — a rasterised resume, exactly the thing this
+product exists to replace — is detected in the browser before a provider call is paid
+for.
+
+Two properties make this safe to act on:
+
+- **The model is told to copy, never to invent**, and runs at **temperature 0**.
+  Creativity here produces an employer the document never mentioned, which is worse
+  than a blank field because the user has no reason to doubt it.
+- **Its answer is parsed permissively.** `parsedResumeSchema` coerces and truncates
+  where `resumeDataSchema` would reject: a number where a string belongs, a newline
+  block where a bullet list belongs, thirteen bullets where twelve are allowed. An
+  entry that cannot be understood at all is dropped on its own. A single malformed
+  field must not cost the user the whole import — they waited forty seconds for it, and
+  the provider call is already spent. The result is then saved through the ordinary
+  create path, where `resumeDataSchema` does apply, so nothing skips validation on the
+  way into the database.
+
+The reply is also recovered from a ``` fence or a `{"resume": …}` wrapper before
+parsing, for the same reason: the expensive work is done, and throwing it away over
+punctuation is a poor trade.
+
+Imports are limited to **5 per 10 minutes per user**, separately from the other AI
+routes. One import costs roughly what twenty summaries cost, and it is something people
+do once and then not again for weeks.
+
 ### Protecting the AI budget
 
 Four layers, weakest to strongest:

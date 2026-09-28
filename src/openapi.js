@@ -7,6 +7,7 @@ import {
   resumeDataSchema,
   summaryRequestSchema,
   improveRequestSchema,
+  importResumeSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "./schemas.js";
@@ -118,6 +119,7 @@ export function buildOpenApiDocument() {
         UpdateProfileBody: toSchema(updateProfileSchema),
         SummaryRequest: toSchema(summaryRequestSchema),
         ImproveRequest: toSchema(improveRequestSchema),
+        ImportRequest: toSchema(importResumeSchema),
         ForgotPasswordBody: toSchema(forgotPasswordSchema),
         ResetPasswordBody: toSchema(resetPasswordSchema),
       },
@@ -359,6 +361,36 @@ export function buildOpenApiDocument() {
             401: unauthorized,
             429: error("Per-user AI rate limit reached"),
             502: error("The provider rejected the request"),
+            503: error("No AI provider key is configured"),
+          },
+        },
+      },
+      "/ai/import": {
+        post: {
+          tags: ["AI"],
+          summary: "Parse an existing resume into structured fields",
+          description:
+            "Takes the plain text of a resume the user already has and returns it in the shape " +
+            "of `ResumeData`, so it can be reviewed and saved as a new resume.\n\n" +
+            "The text is extracted in the browser — this endpoint never receives a file. " +
+            "Only content fields are returned; template, accent colour, section order and " +
+            "profile photo are presentation and are not guessed.\n\n" +
+            "The model is told to copy and never invent, and runs at temperature 0. Its answer " +
+            "is parsed permissively: a field it returns in the wrong shape is coerced or " +
+            "dropped rather than failing the whole import.\n\n" +
+            "Limited to **5 requests per 10 minutes per user** — a much larger prompt than the " +
+            "other AI endpoints, and an action people take rarely.",
+          security: auth,
+          requestBody: { required: true, ...json(ref("ImportRequest")) },
+          responses: {
+            200: {
+              description: "The extracted resume content",
+              ...json({ type: "object", properties: { data: ref("ResumeData") } }),
+            },
+            400: error("The text is shorter than 200 characters or longer than 20,000"),
+            401: unauthorized,
+            429: error("Import rate limit reached (5 per 10 minutes)"),
+            502: error("The provider failed, or did not return usable JSON"),
             503: error("No AI provider key is configured"),
           },
         },
