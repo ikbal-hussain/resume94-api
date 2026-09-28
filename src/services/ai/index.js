@@ -32,32 +32,57 @@ const fence = (content) => `<<<CONTENT\n${String(content).replaceAll(/<<<CONTENT
  * still done the expensive part of the work, and throwing that away over punctuation
  * would be a poor trade. Slicing between the outermost braces recovers both cases.
  */
+/**
+ * Yields every brace-balanced substring, one per opening brace.
+ *
+ * Slicing from the first `{` to the last `}` looked sufficient and is not: prose such
+ * as `Here is the result {as requested}: {"name":…}` starts the slice at the brace in
+ * the sentence and fails a reply whose JSON was perfectly good. Matching braces
+ * properly is the only way to find where an object really ends.
+ *
+ * Braces inside string values are skipped, so a resume bullet containing "{" does not
+ * throw the depth count off.
+ */
+function* objectSlices(raw) {
+  for (let start = raw.indexOf("{"); start !== -1; start = raw.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = start; i < raw.length; i++) {
+      const ch = raw[i];
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = !inString;
+      else if (inString) continue;
+      else if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) {
+        yield raw.slice(start, i + 1);
+        break;
+      }
+    }
+  }
+}
+
 function extractJson(raw) {
-  // Cheapest first, and each fallback is strictly more forgiving than the last. The
-  // brace slice is deliberately LAST: a single brace in a sentence of preamble would
-  // otherwise drag the slice's start backwards and fail a reply that parsed perfectly
-  // well on its own.
-  const candidates = [
-    raw.trim(),
-    raw.replace(/^[\s\S]*?```(?:json)?\s*/i, "").replace(/\s*```[\s\S]*$/, "").trim(),
-  ];
-
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start !== -1 && end > start) candidates.push(raw.slice(start, end + 1));
-
-  for (const candidate of candidates) {
-    if (!candidate.startsWith("{")) continue;
+  // The longest object that parses. A reply may contain more than one — a short note in
+  // a preamble, then the resume — and the resume is always the larger by a wide margin.
+  // This also covers a ``` fence for free: the backticks fall outside the braces.
+  let best = null;
+  for (const slice of objectSlices(raw)) {
+    if (best && slice.length <= best.length) continue;
     try {
-      return JSON.parse(candidate);
+      JSON.parse(slice);
+      best = slice;
     } catch {
-      // Try the next, more aggressive, reading.
+      // Not an object after all — e.g. "{as requested}". Try the next opening brace.
     }
   }
 
+  if (best) return JSON.parse(best);
   throw new HttpError(
     502,
-    start === -1 ? "The AI provider did not return a resume" : "The AI provider returned malformed JSON",
+    raw.includes("{") ? "The AI provider returned malformed JSON" : "The AI provider did not return a resume",
     "AI_BAD_JSON"
   );
 }

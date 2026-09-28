@@ -35,8 +35,10 @@ Every entry below corresponds to work that actually reached `main`.
 - Import requests are validated before the rate limiter is consulted, so a malformed
   request can no longer spend an import from the 5-per-10-minutes budget without a
   provider call having been made.
-- A reply is parsed as-is before falling back to slicing between braces, so a brace in
-  a preamble can no longer drag the slice backwards and fail an otherwise valid answer.
+- The JSON object is located by matching braces rather than slicing from the first `{`
+  to the last `}`, so a brace in a preamble — `Here is the result {as requested}: {…}` —
+  no longer fails a reply whose JSON was valid. Braces inside string values are
+  skipped, and when a reply holds more than one object the largest is taken.
 - The import's documented response is `ImportedResumeData` rather than `ResumeData`.
   It never returns `templateId`, `accentColor`, `sectionOrder` or `profileImage`, and
   the schema said otherwise.

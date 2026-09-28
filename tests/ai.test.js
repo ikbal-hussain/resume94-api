@@ -84,14 +84,27 @@ describe("ai service — parseResume", () => {
     expect(wrapped.name).toBe("Grace");
   });
 
-  it("is not broken by a brace inside the JSON's own string values", async () => {
-    // Slicing from the first brace to the last would be fine here, but reading the reply
-    // as-is first is what keeps a stray brace in any preamble from dragging the slice
-    // backwards and failing a reply that was already valid.
-    const out = await replying('{"name":"Ada","summary":"Wrote {} and ``` in a bullet"}').ai.parseResume({
+  it("finds the resume past a preamble that contains its own braces", async () => {
+    // Slicing from the first brace to the last starts inside "{as requested}" and fails
+    // a reply whose JSON was perfectly good. Braces have to be matched, not bracketed.
+    const out = await replying('Here is the result {as requested}: {"name":"Ada Lovelace"}').ai.parseResume({
       text: resumeText,
     });
-    expect(out.summary).toBe("Wrote {} and ``` in a bullet");
+    expect(out.name).toBe("Ada Lovelace");
+  });
+
+  it("picks the resume when the reply holds more than one object", async () => {
+    const out = await replying('{"note":"ok"}\n{"name":"Grace Hopper","summary":"Compilers"}').ai.parseResume({
+      text: resumeText,
+    });
+    expect(out.name).toBe("Grace Hopper");
+  });
+
+  it("is not thrown off by a brace inside a string value", async () => {
+    const out = await replying('{"name":"Ada","summary":"Wrote {} and \\" in a bullet"}').ai.parseResume({
+      text: resumeText,
+    });
+    expect(out.summary).toBe('Wrote {} and " in a bullet');
   });
 
   it("strips the fence markers out of the document before fencing it", async () => {
