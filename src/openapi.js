@@ -78,6 +78,22 @@ const resumeSummary = {
   },
 };
 
+// What GET /resumes returns: the summary plus the few presentation fields the
+// dashboard needs to draw a miniature of each resume without fetching the document.
+const resumeListItem = {
+  allOf: [
+    resumeSummary,
+    {
+      type: "object",
+      properties: {
+        headline: { type: "string", description: "Convenience copy of data.headline" },
+        templateId: { type: "string", description: "Convenience copy of data.templateId" },
+        accentColor: { type: "string", description: "Convenience copy of data.accentColor" },
+      },
+    },
+  ],
+};
+
 const resumeFull = {
   allOf: [resumeSummary, { type: "object", properties: { data: ref("ResumeData") } }],
 };
@@ -279,7 +295,7 @@ export function buildOpenApiDocument() {
           responses: {
             200: {
               description: "Resumes, most recently updated first",
-              ...json({ type: "object", properties: { resumes: { type: "array", items: resumeSummary } } }),
+              ...json({ type: "object", properties: { resumes: { type: "array", items: resumeListItem } } }),
             },
             401: unauthorized,
           },

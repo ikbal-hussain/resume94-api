@@ -15,6 +15,10 @@ Every entry below corresponds to work that actually reached `main`.
   temperature 0 and is told to copy rather than invent; its answer is parsed
   permissively, so one badly shaped field costs that field rather than the whole
   import. Limited to 5 requests per 10 minutes per user.
+- `GET /api/resumes` now returns `headline`, `templateId` and `accentColor` alongside
+  each summary, so the dashboard can draw a miniature of every resume without fetching
+  the documents. Still a projection, not the whole document: a resume carries a base64
+  photo of up to 1 MB, and a list of twenty would be twenty megabytes.
 - JSON mode, temperature and per-call timeouts in the provider interface
   (`response_format` for Groq, `responseMimeType` for Gemini).
 - `AGENTS.md`, `CLAUDE.md` and `ARCHITECTURE.md` — conventions for contributors and

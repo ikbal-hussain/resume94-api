@@ -17,7 +17,7 @@ The frontend is a separate repository and a separate deployment.
 
 ```bash
 npm run dev      # node --watch on :4100, reads .env if present
-npm test         # vitest run — 74 tests, real Mongo in memory, no mocks of the DB
+npm test         # vitest run — 87 tests, real Mongo in memory, no mocks of the DB
 npm run lint     # eslint
 npm run smoke    # scripts/smoke.mjs against the live deployment (not localhost)
 ```

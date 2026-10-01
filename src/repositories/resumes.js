@@ -9,6 +9,16 @@ const toSummary = (d) => ({
   createdAt: d.createdAt.toISOString(),
   updatedAt: d.updatedAt.toISOString(),
 });
+// The list view draws a miniature of each resume, so it needs the two presentation
+// fields as well. Deliberately not folded into toSummary: the full resume already
+// carries them inside `data`, and repeating them at the top level there would give
+// the same fact two homes that can disagree.
+const toListItem = (d) => ({
+  ...toSummary(d),
+  headline: d.data?.headline || "",
+  templateId: d.data?.templateId || "classic",
+  accentColor: d.data?.accentColor || "#2563eb",
+});
 // Documents stored before the structured-sections change are upgraded on read.
 const toResume = (d) => d && { ...toSummary(d), data: migrateResumeData(d.data) };
 
@@ -23,10 +33,25 @@ export function resumesRepo(db) {
   return {
     async list(userId) {
       const docs = await col
-        .find({ userId: new ObjectId(userId) }, { projection: { title: 1, "data.name": 1, createdAt: 1, updatedAt: 1 } })
+        .find(
+          { userId: new ObjectId(userId) },
+          {
+            // Named fields, never the whole document: a resume carries a base64 profile
+            // photo of up to 1 MB, and a list of twenty would be twenty megabytes.
+            projection: {
+              title: 1,
+              createdAt: 1,
+              updatedAt: 1,
+              "data.name": 1,
+              "data.headline": 1,
+              "data.templateId": 1,
+              "data.accentColor": 1,
+            },
+          }
+        )
         .sort({ updatedAt: -1, _id: -1 })
         .toArray();
-      return docs.map(toSummary);
+      return docs.map(toListItem);
     },
     async find(userId, id) {
       const q = scope(userId, id);
