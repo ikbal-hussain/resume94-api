@@ -32,6 +32,28 @@ describe("resumes", () => {
     await agent.get(`/api/resumes/${id}`).expect(404);
   });
 
+  it("returns enough in the list to draw a card, and nothing heavy", async () => {
+    const agent = await signedInAgent(await makeApp());
+    await agent
+      .post("/api/resumes")
+      .send(
+        sampleResume({
+          headline: "Mathematician",
+          templateId: "modern",
+          accentColor: "#0d9488",
+          // The reason the list is projected rather than fetched whole: a photo is
+          // stored inline and can be a megabyte on its own.
+          profileImage: `data:image/png;base64,${"A".repeat(2000)}`,
+        })
+      )
+      .expect(201);
+
+    const [item] = (await agent.get("/api/resumes").expect(200)).body.resumes;
+    expect(item).toMatchObject({ headline: "Mathematician", templateId: "modern", accentColor: "#0d9488" });
+    expect(item.data).toBeUndefined();
+    expect(JSON.stringify(item)).not.toContain("AAAA");
+  });
+
   it("fills defaults and strips unknown fields", async () => {
     const agent = await signedInAgent(await makeApp());
     const res = await agent.post("/api/resumes").send({ title: "t", data: { hacker: "x" } }).expect(201);
