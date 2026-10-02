@@ -8,6 +8,7 @@ import { resumesRepo } from "./repositories/resumes.js";
 import { passwordResetsRepo } from "./repositories/passwordResets.js";
 import { createAiService } from "./services/ai/index.js";
 import { createMailService } from "./services/mail/index.js";
+import { createGoogleService } from "./services/google.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { makeWithTransaction } from "./db.js";
@@ -21,7 +22,14 @@ import { buildOpenApiDocument } from "./openapi.js";
 // Dependencies (db, ai) are injectable so tests can run against an
 // in-memory database and a fake AI provider.
 // `log` is destructured before `mail` because `mail`'s default reads it.
-export function createApp(config, { db, client, log = console, ai = createAiService(config), mail = createMailService(config, fetch, log) }) {
+export function createApp(config, {
+  db,
+  client,
+  log = console,
+  ai = createAiService(config),
+  mail = createMailService(config, fetch, log),
+  google = createGoogleService(config),
+}) {
   const testing = config.NODE_ENV === "test";
   const users = usersRepo(db);
   const resumes = resumesRepo(db);
@@ -81,9 +89,10 @@ export function createApp(config, { db, client, log = console, ai = createAiServ
       aiProvider: config.AI_PROVIDER,
       mailConfigured: mail.configured,
       mailProvider: mail.provider,
+      googleConfigured: google.configured,
     });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log }));
+  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, testing }));
   app.use("/api/ai", aiRouter({ ai, requireAuth, testing }));
 

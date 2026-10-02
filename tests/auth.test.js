@@ -26,7 +26,10 @@ describe("auth", () => {
       .send({ name: "Ada", email: "Ada@Example.com", password: "password123" });
     expect(res.status).toBe(201);
     expect(res.body.user).toMatchObject({ name: "Ada", email: "ada@example.com" });
-    expect(JSON.stringify(res.body)).not.toMatch(/hash|password/i);
+    // The point is that no hash escapes, not that the word never appears: the user object
+    // legitimately carries `hasPassword` so the client can tell a Google-only account apart.
+    expect(res.body.user.passwordHash).toBeUndefined();
+    expect(JSON.stringify(res.body)).not.toMatch(/\$2[aby]\$/); // a bcrypt hash
     expect(res.headers["set-cookie"][0]).toMatch(/token=.*HttpOnly/i);
   });
 
