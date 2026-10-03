@@ -94,6 +94,17 @@ describe("google sign-in", () => {
     expect(res.body.error.code).toBe("GOOGLE_NOT_CONFIGURED");
   });
 
+  it("still allows many accounts with no Google identity at all", async () => {
+    // The unique index on googleId has to be partial. Every password-only account stores
+    // googleId: null, and a plain unique index would let exactly one of them exist —
+    // which would break ordinary registration rather than anything Google-related.
+    const app = await makeApp({}, { google: fakeGoogle() });
+    for (const email of ["one@example.com", "two@example.com", "three@example.com"]) {
+      await request(app).post("/api/auth/register").send({ name: "X", email, password: "password123" }).expect(201);
+    }
+    expect(await app.locals.db.collection("users").countDocuments()).toBe(3);
+  });
+
   it("validates the body", async () => {
     const app = await makeApp({}, { google: fakeGoogle() });
     await request(app).post("/api/auth/google").send({}).expect(400);

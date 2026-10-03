@@ -115,7 +115,7 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
     // Already linked: the subject id is the identity, not the address. Google addresses
     // can change, and matching on the id means a changed address still signs in here.
     const linked = await users.findByGoogleId(sub);
-    if (linked) return res.json({ user: startSession(res, await users.findById(linked._id.toString())) });
+    if (linked) return res.json({ user: startSession(res, linked) });
 
     const normalisedEmail = email.trim().toLowerCase();
     const existing = await users.findCredentialsByEmail(normalisedEmail);

@@ -37,7 +37,11 @@ export function usersRepo(db) {
     },
     // Raw doc (with passwordHash) — only for credential checks.
     findCredentialsByEmail: (email) => col.findOne({ email }),
-    findByGoogleId: (googleId) => col.findOne({ googleId }),
+    // Mapped rather than raw: the route only needs the public shape, and re-reading the
+    // document to get it opened a window where the account could be deleted in between.
+    async findByGoogleId(googleId) {
+      return toUser(await col.findOne({ googleId }));
+    },
 
     /**
      * Attaches a Google identity to an existing account.
