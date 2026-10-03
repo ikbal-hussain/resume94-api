@@ -6,11 +6,13 @@ import { COOKIE_NAME, cookieOptions, signToken } from "../middleware/auth.js";
 import {
   registerSchema,
   loginSchema,
+  googleAuthSchema,
   updateProfileSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "../schemas.js";
 import { resetPasswordEmail } from "../services/mail/templates/resetPassword.js";
+import { googleAccountEmail } from "../services/mail/templates/googleAccount.js";
 
 // Used to keep login timing similar whether or not the email exists.
 const DUMMY_HASH = bcrypt.hashSync("dummy-password", 10);
@@ -25,7 +27,7 @@ const padTo = async (floorMs, startedAt, skip) => {
   if (remaining > 0) await sleep(remaining);
 };
 
-export function authRouter({ config, users, passwordResets, mail, withTransaction, requireAuth, testing, log = console }) {
+export function authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, testing, log = console }) {
   const r = Router();
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -75,9 +77,88 @@ export function authRouter({ config, users, passwordResets, mail, withTransactio
   r.post("/login", limiter, validateBody(loginSchema), async (req, res) => {
     const { email, password } = req.body;
     const row = await users.findCredentialsByEmail(email);
-    const ok = await bcrypt.compare(password, row?.passwordHash ?? DUMMY_HASH);
-    if (!row || !ok) throw new HttpError(401, "Invalid email or password", "BAD_CREDENTIALS");
+    // A Google-only account has no hash. Comparing against the dummy keeps the timing
+    // identical to an unknown address, and `row.passwordHash` is checked separately so a
+    // missing hash can never be the thing that passes — bcrypt.compare(x, undefined)
+    // rejects today, but relying on that is one library change away from failing open.
+    const ok = await bcrypt.compare(password, row?.passwordHash || DUMMY_HASH);
+    if (!row || !row.passwordHash || !ok) throw new HttpError(401, "Invalid email or password", "BAD_CREDENTIALS");
     res.json({ user: startSession(res, await users.findById(row._id.toString())) });
+  });
+
+  /**
+   * Sign in or register with a Google ID token.
+   *
+   * The browser gets the token from Google's own button and posts it here once; the
+   * signature, issuer and audience are checked server-side before any of it is believed.
+   * From there it is an ordinary session — the same cookie every other route sets.
+   */
+  r.post("/google", limiter, validateBody(googleAuthSchema), async (req, res) => {
+    if (!google.configured) {
+      throw new HttpError(503, "Google sign-in is not configured on this server", "GOOGLE_NOT_CONFIGURED");
+    }
+
+    let claims;
+    try {
+      claims = await google.verify(req.body.credential);
+    } catch (err) {
+      // The reason is for us, not for the caller: "wrong audience" and "expired" are
+      // both just an unusable token from outside, and spelling out which one helps
+      // nobody but someone probing the endpoint.
+      log.error?.(`[google] token rejected: ${err.message}`);
+      throw new HttpError(401, "That Google sign-in could not be verified", "GOOGLE_TOKEN_INVALID");
+    }
+
+    const { sub, email, emailVerified, name, picture } = claims;
+    if (!sub || !email) throw new HttpError(401, "That Google sign-in could not be verified", "GOOGLE_TOKEN_INVALID");
+
+    // Already linked: the subject id is the identity, not the address. Google addresses
+    // can change, and matching on the id means a changed address still signs in here.
+    const linked = await users.findByGoogleId(sub);
+    if (linked) return res.json({ user: startSession(res, linked) });
+
+    const normalisedEmail = email.trim().toLowerCase();
+    const existing = await users.findCredentialsByEmail(normalisedEmail);
+
+    if (existing) {
+      // The whole defence. Without this check, anyone who can persuade Google to issue a
+      // token for an address takes over the Resume94 account holding it. Refused rather
+      // than given a second account, because two accounts for one address is worse.
+      if (!emailVerified) {
+        throw new HttpError(
+          403,
+          "Google has not verified this email address, so it cannot be linked to an existing account",
+          "GOOGLE_EMAIL_UNVERIFIED"
+        );
+      }
+      const user = await users.linkGoogle(existing._id, { googleId: sub, avatarUrl: picture ?? null });
+      // Null means the account already carries a different Google identity.
+      if (!user) throw new HttpError(409, "This account is already linked to a different Google account", "GOOGLE_ALREADY_LINKED");
+      return res.json({ user: startSession(res, user) });
+    }
+
+    // New account. An unverified address is refused here too: registering it would let
+    // someone claim an address they do not own and sit on it before the real owner signs up.
+    if (!emailVerified) {
+      throw new HttpError(403, "Google has not verified this email address", "GOOGLE_EMAIL_UNVERIFIED");
+    }
+
+    const user = await users.create({
+      name: (name || normalisedEmail.split("@")[0]).slice(0, 80),
+      email: normalisedEmail,
+      googleId: sub,
+      avatarUrl: picture ?? null,
+    });
+    if (user) return res.status(201).json({ user: startSession(res, user) });
+
+    // Lost a race: an account for this address appeared between the lookup above and the
+    // insert. Linking is the decision we already made — the address is verified, checked
+    // before the insert was attempted — so take the branch we would have taken a moment
+    // earlier rather than answering EMAIL_TAKEN to someone Google just vouched for.
+    const raced = await users.findCredentialsByEmail(normalisedEmail);
+    const linkedAfterRace = raced && (await users.linkGoogle(raced._id, { googleId: sub, avatarUrl: picture ?? null }));
+    if (!linkedAfterRace) throw new HttpError(409, "Email already registered", "EMAIL_TAKEN");
+    res.json({ user: startSession(res, linkedAfterRace) });
   });
 
   // Always 204, whether or not the address has an account. Reporting "no such user"
@@ -92,12 +173,22 @@ export function authRouter({ config, users, passwordResets, mail, withTransactio
     const startedAt = Date.now();
     const row = await users.findCredentialsByEmail(req.body.email);
     if (row) {
-      const token = await passwordResets.create(row._id, config.RESET_TOKEN_TTL_MINUTES);
-      const link = `${config.CLIENT_ORIGIN}/reset-password?token=${encodeURIComponent(token)}`;
+      // An account created through Google has no password to reset. The answer goes to
+      // the inbox rather than into the response: saying it here would tell any caller
+      // that the address is registered, which is the exact thing the uniform 204 hides.
+      // Silence would be worse than either — the person is locked out and told nothing.
+      const message = row.passwordHash
+        ? resetPasswordEmail({
+            to: row.email,
+            name: row.name,
+            link: `${config.CLIENT_ORIGIN}/reset-password?token=${encodeURIComponent(
+              await passwordResets.create(row._id, config.RESET_TOKEN_TTL_MINUTES)
+            )}`,
+            ttlMinutes: config.RESET_TOKEN_TTL_MINUTES,
+          })
+        : googleAccountEmail({ to: row.email, name: row.name, signInUrl: `${config.CLIENT_ORIGIN}/auth/sign-in` });
       try {
-        await mail.send(
-          resetPasswordEmail({ to: row.email, name: row.name, link, ttlMinutes: config.RESET_TOKEN_TTL_MINUTES })
-        );
+        await mail.send(message);
       } catch (err) {
         // A delivery failure must not change the response, or the timing difference
         // leaks the same fact the uniform status code is hiding.

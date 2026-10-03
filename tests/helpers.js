@@ -11,6 +11,30 @@ export const fakeAi = {
   parseResume: async () => ({ name: "Ada Lovelace", experience: [{ company: "Analytical Engines Ltd" }] }),
 };
 
+/**
+ * Stands in for Google's token verifier.
+ *
+ * The real one fetches Google's signing keys over the network and demands a credential,
+ * neither of which belongs in a test suite. Injected the same way the AI provider is, so
+ * every path through the route is exercised without either.
+ */
+export function fakeGoogle(claims = {}) {
+  return {
+    configured: true,
+    async verify(credential) {
+      if (credential === "bad-token") throw new Error("Invalid token signature");
+      return {
+        sub: "google-sub-1",
+        email: "ada@example.com",
+        emailVerified: true,
+        name: "Ada Lovelace",
+        picture: "https://lh3.googleusercontent.com/a/ada",
+        ...claims,
+      };
+    },
+  };
+}
+
 // One in-memory MongoDB per test file; each makeApp() gets a fresh database.
 // A single-node replica set rather than a standalone: transactions need one, and the
 // reset flow should be exercised on the same footing as Atlas.

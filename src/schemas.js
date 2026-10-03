@@ -11,6 +11,12 @@ export const registerSchema = z.object({
   password: z.string().min(8, "Password must be at least 8 characters").max(128),
 });
 
+// A Google ID token is a JWT of three base64url segments. Bounded because it arrives
+// unauthenticated: without a cap this is a route for posting a megabyte at the verifier.
+export const googleAuthSchema = z.object({
+  credential: z.string().trim().min(1).max(4096),
+});
+
 export const loginSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   password: z.string().min(1).max(128),

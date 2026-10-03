@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   registerSchema,
   loginSchema,
+  googleAuthSchema,
   updateProfileSchema,
   resumeBodySchema,
   resumeDataSchema,
@@ -62,6 +63,9 @@ const userResponse = {
         name: { type: "string", example: "Ada Lovelace" },
         email: { type: "string", format: "email" },
         createdAt: { type: "string", format: "date-time" },
+        avatarUrl: { type: "string", nullable: true, description: "From Google, when the account is linked" },
+        hasPassword: { type: "boolean", description: "False for an account created through Google" },
+        hasGoogle: { type: "boolean" },
       },
     },
   },
@@ -144,6 +148,7 @@ export function buildOpenApiDocument() {
         ResumeBody: toSchema(resumeBodySchema),
         RegisterBody: toSchema(registerSchema),
         LoginBody: toSchema(loginSchema),
+        GoogleAuthBody: toSchema(googleAuthSchema),
         UpdateProfileBody: toSchema(updateProfileSchema),
         SummaryRequest: toSchema(summaryRequestSchema),
         ImproveRequest: toSchema(improveRequestSchema),
@@ -211,6 +216,29 @@ export function buildOpenApiDocument() {
             200: { description: "Signed in; session cookie set", ...json(userResponse) },
             401: error("Invalid email or password"),
             429: error("Too many attempts (20 per 15 minutes per IP)"),
+          },
+        },
+      },
+      "/auth/google": {
+        post: {
+          tags: ["Auth"],
+          summary: "Sign in or register with a Google ID token",
+          description:
+            "Takes the ID token Google's sign-in button issues in the browser and verifies its " +
+            "signature, issuer and audience server-side. An address that already has an account is " +
+            "linked to it, but only when Google reports the address as verified — without that check " +
+            "a token for any address would take over the account holding it. Returns 201 when a new " +
+            "account was created and 200 when an existing one was used.",
+          requestBody: { required: true, ...json(ref("GoogleAuthBody")) },
+          responses: {
+            200: { description: "Signed in; session cookie set", ...json(userResponse) },
+            201: { description: "Account created; session cookie set", ...json(userResponse) },
+            400: validation,
+            401: error("The token could not be verified"),
+            403: error("Google has not verified this email address"),
+            409: error("That account is linked to a different Google account, or the email was taken in a race"),
+            429: error("Too many attempts (20 per 15 minutes per IP)"),
+            503: error("Google sign-in is not configured on this server"),
           },
         },
       },

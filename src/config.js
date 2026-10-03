@@ -18,6 +18,10 @@ const schema = z.object({
   GEMINI_MODEL: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().optional(),
+  // Google sign-in. Unset simply disables it: the route 503s and the frontend hides
+  // the button, so the feature can ship before a client ID exists. The secret is not
+  // listed because this integration never exchanges an authorization code.
+  GOOGLE_CLIENT_ID: z.string().optional(),
   // Password-reset delivery. "console" prints the link to the server log, which is all
   // local development needs; "resend" sends for real. See services/mail/providers.
   MAIL_PROVIDER: z.enum(["console", "resend"]).default("console"),
