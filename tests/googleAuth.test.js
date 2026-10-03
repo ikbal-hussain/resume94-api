@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { makeApp, startMongo, stopMongo, fakeGoogle, fakeMailer } from "./helpers.js";
+import { usersRepo } from "../src/repositories/users.js";
 
 beforeAll(startMongo, 120_000);
 afterAll(stopMongo);
@@ -103,6 +104,26 @@ describe("google sign-in", () => {
       await request(app).post("/api/auth/register").send({ name: "X", email, password: "password123" }).expect(201);
     }
     expect(await app.locals.db.collection("users").countDocuments()).toBe(3);
+  });
+
+  it("links instead of failing when a registration wins the race to the address", async () => {
+    // Between the lookup and the insert, someone registers the same address with a
+    // password. The insert loses to the unique email index, and the person Google just
+    // vouched for must still end up in that account rather than reading "email taken".
+    // Built first only to get a database; the app under test is `raced`, and both share
+    // that database through the injected repository.
+    const real = usersRepo((await makeApp({}, { google: fakeGoogle() })).locals.db);
+    const users = {
+      ...real,
+      create: async (doc) => {
+        await real.create({ name: "Already here", email: doc.email, passwordHash: "x" });
+        return null; // what the duplicate-key catch returns
+      },
+    };
+    const raced = await makeApp({}, { google: fakeGoogle(), users });
+
+    const res = await signIn(raced).expect(200); // 200, not 201 — it linked, it did not create
+    expect(res.body.user).toMatchObject({ email: "ada@example.com", hasGoogle: true, name: "Already here" });
   });
 
   it("validates the body", async () => {

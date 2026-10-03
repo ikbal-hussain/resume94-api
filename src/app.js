@@ -29,9 +29,11 @@ export function createApp(config, {
   ai = createAiService(config),
   mail = createMailService(config, fetch, log),
   google = createGoogleService(config),
+  // Injectable so a test can force the losing side of a race that is otherwise a
+  // microsecond wide between two queries.
+  users = usersRepo(db),
 }) {
   const testing = config.NODE_ENV === "test";
-  const users = usersRepo(db);
   const resumes = resumesRepo(db);
   const passwordResets = passwordResetsRepo(db);
   // Without a client (or on a standalone server) this still runs, just not atomically.

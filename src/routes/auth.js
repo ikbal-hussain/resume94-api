@@ -149,9 +149,16 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
       googleId: sub,
       avatarUrl: picture ?? null,
     });
-    // Lost a race with another sign-up for the same address.
-    if (!user) throw new HttpError(409, "Email already registered", "EMAIL_TAKEN");
-    res.status(201).json({ user: startSession(res, user) });
+    if (user) return res.status(201).json({ user: startSession(res, user) });
+
+    // Lost a race: an account for this address appeared between the lookup above and the
+    // insert. Linking is the decision we already made — the address is verified, checked
+    // before the insert was attempted — so take the branch we would have taken a moment
+    // earlier rather than answering EMAIL_TAKEN to someone Google just vouched for.
+    const raced = await users.findCredentialsByEmail(normalisedEmail);
+    const linkedAfterRace = raced && (await users.linkGoogle(raced._id, { googleId: sub, avatarUrl: picture ?? null }));
+    if (!linkedAfterRace) throw new HttpError(409, "Email already registered", "EMAIL_TAKEN");
+    res.json({ user: startSession(res, linkedAfterRace) });
   });
 
   // Always 204, whether or not the address has an account. Reporting "no such user"
