@@ -9,6 +9,15 @@ Every entry below corresponds to work that actually reached `main`.
 ## [Unreleased]
 
 ### Added
+- `POST /api/auth/google` — signs in or registers from the ID token Google's sign-in
+  button issues in the browser. The signature, issuer and audience are verified
+  server-side; the session that follows is the ordinary one. Unset `GOOGLE_CLIENT_ID`
+  disables it with a 503 rather than a half-working endpoint.
+- `passwordHash` is now optional on a user, and `login` **refuses an account that never
+  set one** rather than relying on bcrypt to reject a missing hash.
+- A password-reset request for a Google-only account is answered by email explaining
+  that it signs in with Google. The HTTP response is still an unconditional 204 —
+  saying it there would undo the account-enumeration defence that endpoint exists for.
 - `POST /api/ai/import` — parses the plain text of an existing resume into the app's
   structured shape, so a user can start from a resume they already have. The text is
   extracted in the browser, so the endpoint never handles a file. The model runs at

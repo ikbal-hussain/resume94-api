@@ -44,6 +44,12 @@ export function makeWithTransaction(client, log = console) {
 // Idempotent; safe to run on every cold start.
 export async function ensureIndexes(db) {
   await db.collection("users").createIndex({ email: 1 }, { unique: true });
+  // One Resume94 account per Google subject, enforced by the database rather than left
+  // to follow from the email index. Partial on purpose: every password-only account has
+  // googleId: null, and a plain unique index would admit exactly one of them.
+  await db
+    .collection("users")
+    .createIndex({ googleId: 1 }, { unique: true, partialFilterExpression: { googleId: { $type: "string" } } });
   await db.collection("resumes").createIndex({ userId: 1, updatedAt: -1 });
   await db.collection("passwordResets").createIndex({ tokenHash: 1 });
   // expireAfterSeconds: 0 means "delete once expiresAt passes" — Mongo clears spent
