@@ -27,19 +27,47 @@ function fakeUpstash() {
   const calls = [];
   let fail = null;
 
+  // Redis semantics, not convenient ones: a key with no expiry reports PTTL -1, an
+  // absent one reports -2, and DECR on a missing key creates it at -1. Modelling the
+  // inconvenient parts is the only way these tests can catch the bugs that live there.
+  const pttl = (key) => {
+    const entry = keys.get(key);
+    if (!entry) return -2;
+    if (entry.expiresAt === null) return -1;
+    if (entry.expiresAt <= Date.now()) {
+      keys.delete(key);
+      return -2;
+    }
+    return entry.expiresAt - Date.now();
+  };
+
   const run = ([command, ...args]) => {
     if (command === "EVAL") {
-      const [, , key, windowMs] = args;
-      const entry = keys.get(key) ?? { hits: 0, expiresAt: Date.now() + Number(windowMs) };
-      entry.hits += 1;
-      if (entry.hits === 1) entry.expiresAt = Date.now() + Number(windowMs);
-      keys.set(key, entry);
-      return [entry.hits, entry.expiresAt - Date.now()];
-    }
-    if (command === "DECR") {
-      const entry = keys.get(args[0]);
-      if (entry) entry.hits -= 1;
-      return entry?.hits ?? 0;
+      const [script, , key, windowMs] = args;
+
+      if (script.includes("INCR")) {
+        pttl(key); // expire first, as Redis would before the INCR lands
+        const entry = keys.get(key) ?? { hits: 0, expiresAt: null };
+        entry.hits += 1;
+        keys.set(key, entry);
+        // Follows the script it was handed rather than the behaviour we want: a fake
+        // that always repairs the TTL would let a store that never repairs it pass.
+        const repairs = script.includes("ttl < 0");
+        let ttl = pttl(key);
+        if (entry.hits === 1 || (repairs && ttl < 0)) {
+          entry.expiresAt = Date.now() + Number(windowMs);
+          ttl = Number(windowMs);
+        }
+        return [entry.hits, ttl];
+      }
+
+      if (script.includes("EXISTS")) {
+        if (pttl(key) === -2) return 0; // absent: the key must not be created
+        const entry = keys.get(key);
+        entry.hits -= 1;
+        return entry.hits;
+      }
+      throw new Error("fake upstash got an unrecognised script");
     }
     if (command === "DEL") return keys.delete(args[0]) ? 1 : 0;
     throw new Error(`fake upstash got an unexpected command: ${command}`);
@@ -56,6 +84,10 @@ function fakeUpstash() {
     fetchImpl,
     calls,
     keys,
+    /** Strips a key's expiry, as a half-applied write or a bare DECR would leave it. */
+    stripExpiry(suffix) {
+      for (const [k, entry] of keys) if (k.endsWith(suffix)) entry.expiresAt = null;
+    },
     /** Makes every later call answer like an unreachable or angry Upstash. */
     breakWith(response) {
       fail = response;
@@ -146,6 +178,46 @@ describe("the Upstash store", () => {
     await request(limiterOn(service, "ai:import:", 5)).get("/");
 
     expect([...upstash.keys.keys()].sort()).toEqual(["ai:import:ada", "auth:attempts:ada"]);
+  });
+
+  // A key with no expiry is immortal, and its counter only ever climbs: that client
+  // would be limited forever while the headers advertise a window that never ends.
+  it("reapplies a missing expiry instead of leaving the key immortal", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    const app = limiterOn(service, "test:", 5);
+
+    await request(app).get("/");
+    upstash.stripExpiry("ada"); // as a half-applied write or a bare DECR would leave it
+    const res = await request(app).get("/");
+
+    expect([...upstash.keys.values()][0].expiresAt).not.toBeNull();
+    expect(Number(res.headers["ratelimit-reset"] ?? 1)).toBeGreaterThan(0);
+  });
+
+  // DECR on a missing key creates it at -1 with no expiry. A limiter using
+  // skipFailedRequests whose window lapsed mid-request would mint a permanently
+  // negative counter, and that client could never reach the limit again.
+  it("never creates a key by decrementing one that is gone", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    const store = service.store("test:");
+    store.init({ windowMs: 60_000 });
+
+    await store.decrement("vanished");
+    expect(upstash.keys.size).toBe(0);
+  });
+
+  it("still decrements a counter that is live", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    const store = service.store("test:");
+    store.init({ windowMs: 60_000 });
+
+    await store.increment("ada");
+    await store.increment("ada");
+    await store.decrement("ada");
+    expect(hitsFor(upstash.keys, "ada")).toBe(1);
   });
 
   it("starts the window now when the key has no TTL left to report", async () => {

@@ -104,7 +104,7 @@ export function createApp(config, {
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
-  app.use("/api/ai", aiRouter({ ai, requireAuth, rateLimits, testing }));
+  app.use("/api/ai", aiRouter({ ai, requireAuth, rateLimits, testing, log }));
 
   app.use(notFound);
   app.use(errorHandler(log));

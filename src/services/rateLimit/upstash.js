@@ -12,13 +12,38 @@
  *
  * INCR and PEXPIRE as two calls would leave a window where the key exists with no TTL:
  * if the process dies between them the counter never expires and that client is limited
- * forever. The TTL is set only on the first hit of a window, so a later hit cannot
- * extend it — otherwise a client making steady requests would never see the window end.
+ * forever, while the headers keep advertising a window that never ends.
+ *
+ * The TTL is reapplied whenever it is missing, not only on the first hit. A key with no
+ * expiry is otherwise immortal and its counter only ever climbs — and `PTTL` returning
+ * -1 is exactly the state a bare `DECR` on a missing key would create, so the two
+ * scripts here have to agree about it. A later hit inside a live window does not extend
+ * it: `ttl < 0` is "no expiry at all", never "a little time left".
  */
 const INCREMENT = `
 local hits = redis.call("INCR", KEYS[1])
-if hits == 1 then redis.call("PEXPIRE", KEYS[1], ARGV[1]) end
-return { hits, redis.call("PTTL", KEYS[1]) }
+local ttl = redis.call("PTTL", KEYS[1])
+if hits == 1 or ttl < 0 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return { hits, ttl }
+`;
+
+/**
+ * Decrementing has to refuse to create the key.
+ *
+ * Redis treats `DECR` on a missing key as 0, so a bare one leaves the key at -1 with no
+ * expiry — and nothing ever removes it. express-rate-limit calls `decrement` when a
+ * limiter sets `skipFailedRequests` or `skipSuccessfulRequests`, so a window expiring
+ * between the INCR and the DECR would mint a permanently negative counter that can
+ * never reach the limit again: that client would be silently unmetered, forever. No
+ * limiter sets those options today, but this is the store's published API and AGENTS.md
+ * now invites new limiters onto it.
+ */
+const DECREMENT = `
+if redis.call("EXISTS", KEYS[1]) == 1 then return redis.call("DECR", KEYS[1]) end
+return 0
 `;
 
 /**
@@ -81,15 +106,15 @@ export class UpstashStore {
       this.prefix + key,
       String(this.windowMs),
     ]);
-    // PTTL answers -1 for a key with no expiry and -2 for one that expired between the
-    // INCR and the read. Either way the window starts now rather than reporting a reset
-    // time in the past, which would make the Retry-After header meaningless.
+    // The script reapplies a missing TTL, so a negative value here means the key expired
+    // between its two reads. Reporting the window as starting now keeps resetTime in the
+    // future; a time in the past would make Retry-After meaningless.
     const remaining = Number(ttl) > 0 ? Number(ttl) : this.windowMs;
     return { totalHits: Number(hits), resetTime: new Date(Date.now() + remaining) };
   }
 
   async decrement(key) {
-    await this.command(["DECR", this.prefix + key]);
+    await this.command(["EVAL", DECREMENT, "1", this.prefix + key]);
   }
 
   async resetKey(key) {

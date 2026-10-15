@@ -36,9 +36,18 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   // They fail open, like the resume routes and unlike the AI ones. A counter outage
   // that locked everybody out of signing in would be a worse outage than the brute
   // force it exists to slow down, and the password hash is the real defence there.
+  //
+  // The numbers were raised when the counters moved to a shared store, and the reason
+  // is the whole point of that move: these limits used to be multiplied by the number
+  // of warm instances and reset on every cold start, so they never bound. Now they do,
+  // and an IP is not a person — an office, a campus or an Indian mobile carrier behind
+  // CGNAT is thousands of people on one address. At the old 20 per 15 minutes the first
+  // real incident would have been a shared network locked out of signing in. 100 still
+  // makes credential stuffing slow and leaves bcrypt, which is the actual defence,
+  // doing the work.
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 20,
+    limit: 100,
     store: rateLimits.store("auth:attempts:"),
     passOnStoreError: true,
     standardHeaders: true,
@@ -48,10 +57,14 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   });
 
   // Tighter than the shared limiter: each request sends real mail to a third party,
-  // so this endpoint is the one worth abusing.
+  // so this endpoint is the one worth abusing. Raised from 5 for the CGNAT reason
+  // above — five an hour for an entire carrier's worth of users was a lockout, not a
+  // limit. It still covers both /forgot-password and /reset-password from one budget,
+  // which means mail abuse from a shared address can stop someone on that address
+  // completing a reset they legitimately started; splitting them is tracked separately.
   const resetLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
-    limit: 5,
+    limit: 20,
     store: rateLimits.store("auth:reset:"),
     passOnStoreError: true,
     standardHeaders: true,
@@ -61,10 +74,12 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   });
 
   // Generous by comparison: one page load spends a single call, but the endpoint is
-  // unauthenticated, so it should not be an unmetered route to the database.
+  // unauthenticated, so it should not be an unmetered route to the database. Also
+  // raised for shared addresses — this one is a single indexed read, so it is the
+  // cheapest of the three to be wrong about.
   const probeLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 60,
+    limit: 300,
     store: rateLimits.store("auth:probe:"),
     passOnStoreError: true,
     standardHeaders: true,

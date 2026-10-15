@@ -54,6 +54,12 @@ Every entry below corresponds to work that actually reached `main`.
   resume coming back from the provider, which does not fit in the 10s default.
 
 ### Fixed
+- The auth limiters are **raised from 20 to 100 per 15 minutes** (register/login/google)
+  and **from 5 to 20 per hour** (password reset), because moving to a shared store is
+  what made them bind. They key on IP, and an IP is not a person: an office, a campus or
+  a mobile carrier behind CGNAT is thousands of people on one address. At the old
+  numbers — tuned when a cold start wiped the counter and each instance kept its own —
+  the first real incident would have been a shared network locked out of signing in.
 - The resume limiter's `keyGenerator` read `req.ip` directly as its fallback, which
   express-rate-limit flags as `ERR_ERL_KEY_GEN_IPV6` — and only *logs*, so it was easy
   to miss. An IPv6 client can take a fresh address at will, and counting the raw

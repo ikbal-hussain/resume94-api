@@ -17,7 +17,7 @@ The frontend is a separate repository and a separate deployment.
 
 ```bash
 npm run dev      # node --watch on :4100, reads .env if present
-npm test         # vitest run — 116 tests, real Mongo in memory, no mocks of the DB
+npm test         # vitest run — 119 tests, real Mongo in memory, no mocks of the DB
 npm run lint     # eslint
 npm run smoke    # scripts/smoke.mjs against the live deployment (not localhost)
 ```
@@ -87,6 +87,12 @@ failure. Match that. A comment restating the line below it is noise; delete it.
   belongs to, and note that `failClosed` must read `next`'s argument — a wrapper that
   ignores it silently turns fail-closed back into fail-open while the options still say
   otherwise.
+- **An IP-keyed limit is not a per-person limit, and now it actually binds.** The auth
+  limiters key on IP, and an office, a campus or an Indian mobile carrier behind CGNAT
+  is thousands of people on one address. While the counters were per instance this
+  barely mattered; with a shared store the configured number is the real ceiling for
+  everyone on that address at once. That is why these are 100 per 15 minutes rather
+  than 20. Think about the shared-address case before tightening one.
 - **A custom `keyGenerator` that touches `req.ip` must go through `ipKeyGenerator`.**
   An IPv6 client can take a fresh address whenever it likes, so counting the raw address
   hands out a fresh bucket with it. express-rate-limit logs `ERR_ERL_KEY_GEN_IPV6` when

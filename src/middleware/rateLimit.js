@@ -22,5 +22,9 @@ export const failClosed = (limiter, message, log = console) => (req, res, next) 
   limiter(req, res, (err) => {
     if (!err) return next();
     log.error?.(err);
-    next(new HttpError(503, message, "RATE_LIMIT_UNAVAILABLE"));
+    const unavailable = new HttpError(503, message, "RATE_LIMIT_UNAVAILABLE");
+    // The OpenAPI text invites a retry, so say when rather than leaving the client to
+    // guess and hammer. Short, because a counter outage is usually brief.
+    unavailable.headers = { "Retry-After": "5" };
+    next(unavailable);
   });
