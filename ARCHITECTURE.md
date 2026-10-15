@@ -304,9 +304,11 @@ These are real and stated deliberately — each has a tracked fix.
 2. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
    the user on every request, which covers deletion; the full answer is short-lived
    access tokens plus rotating refresh tokens.
-3. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
-   (Mumbai)**, costing roughly 200 ms per database round trip. Measured, not guessed.
-   The fix is `"regions": ["bom1"]` in `vercel.json`.
+3. ~~**The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
+   (Mumbai)**, costing roughly 200 ms per database round trip.~~ Fixed: `vercel.json`
+   pins `"regions": ["bom1"]`, so the function, Atlas and the Upstash rate-limit
+   counters all sit in Mumbai. The limiter runs on every request, which made
+   co-locating it the deciding factor rather than a nice-to-have.
 4. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
 5. **No error tracking.** A 500 in production is visible only in Vercel's logs.

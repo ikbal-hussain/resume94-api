@@ -50,6 +50,11 @@ Every entry below corresponds to work that actually reached `main`.
   an unreachable counter answers 503 (`RATE_LIMIT_UNAVAILABLE`), because those routes
   pay a provider per call and unmetered is worse than unavailable. Auth and resumes
   fail open, where an outage would only stop someone using their own account.
+- **The function now runs in `bom1` (Mumbai)** rather than Vercel's `iad1` default.
+  Atlas is in `ap-south-1` and the rate-limit counters are in Upstash beside it, so the
+  previous layout put every database round trip across an ocean — about 200ms each,
+  measured — and would have done the same to the limiter call that now runs on every
+  single request. The users are in India as well.
 - The serverless function's `maxDuration` is raised to 60s. An import waits on a whole
   resume coming back from the provider, which does not fit in the 10s default.
 

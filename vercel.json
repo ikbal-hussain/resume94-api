@@ -1,6 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
+  "_comment_regions": "Atlas is in ap-south-1 (Mumbai) and the rate-limit counters are in Upstash alongside it. The default iad1 (Washington DC) put every database round trip across an ocean -- measured at roughly 200ms each -- and would have done the same to the limiter call that now runs on every request. Co-located, not guessed: the users are in India too.",
+  "regions": ["bom1"],
   "builds": [
     {
       "src": "api/index.js",
