@@ -100,6 +100,11 @@ export function createApp(config, {
       // instances. Nothing else in the API shows that, and the route it matters most on
       // is the one that pays a provider per call.
       rateLimitStore: rateLimits.provider,
+      // Reachable, not merely configured. A mistyped token reads as "upstash" from the
+      // line above while every AI request 503s and every other limit passes through
+      // uncounted, so this is probed the way the database above is pinged rather than
+      // inferred from the environment. null when there is nothing to reach.
+      rateLimitStoreReachable: await rateLimits.ping(),
     });
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));

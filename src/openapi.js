@@ -186,6 +186,13 @@ export function buildOpenApiDocument() {
                   mailConfigured: { type: "boolean" },
                   mailProvider: { type: "string", enum: ["console", "resend"] },
                   googleConfigured: { type: "boolean" },
+                  rateLimitStoreReachable: {
+                    type: "boolean",
+                    nullable: true,
+                    description:
+                      "Whether the shared counter actually answered, not merely whether it is " +
+                      "configured. null when the in-process store is in use.",
+                  },
                   rateLimitStore: {
                     type: "string",
                     enum: ["memory", "upstash"],

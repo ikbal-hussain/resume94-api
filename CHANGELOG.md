@@ -45,7 +45,13 @@ Every entry below corresponds to work that actually reached `main`.
   serverless function cannot reuse.
   With the credentials unset the limiters fall back to the in-process store, which is
   correct for local work and the tests — so `/api/health` now reports `rateLimitStore`
-  and the smoke test **fails** if production is answering on `"memory"`.
+  and `rateLimitStoreReachable`, and the smoke test **fails** on either `"memory"` or a
+  store that does not answer. Reachability is probed rather than inferred, the way the
+  database is pinged: a mistyped token would otherwise read as healthy while every AI
+  request 503s and every other limit passes through uncounted. The probe is cached for
+  30s because `/api/health` is public and Upstash meters commands.
+- An `UPSTASH_REDIS_REST_URL` that is not `https://` is **refused**. The token is a
+  bearer credential on every request and would otherwise cross the network in the clear.
 - **A limiter now decides what a counter outage means.** The AI routes fail closed:
   an unreachable counter answers 503 (`RATE_LIMIT_UNAVAILABLE`), because those routes
   pay a provider per call and unmetered is worse than unavailable. Auth and resumes

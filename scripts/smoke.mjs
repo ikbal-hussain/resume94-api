@@ -124,6 +124,12 @@ async function run() {
       body?.rateLimitStore && body.rateLimitStore !== "memory",
       `rateLimitStore is "${body?.rateLimitStore}" — limits are counted per instance`
     );
+    // Configured is not the same as working. A mistyped token leaves the field above
+    // saying "upstash" while every AI request 503s, so the gate is reachability.
+    expect(
+      body?.rateLimitStoreReachable === true,
+      `rateLimitStore is "${body?.rateLimitStore}" but it did not answer — credentials are wrong or it is down`
+    );
     return body.rateLimitStore;
   });
 

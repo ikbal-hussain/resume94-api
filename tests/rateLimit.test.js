@@ -69,6 +69,7 @@ function fakeUpstash() {
       }
       throw new Error("fake upstash got an unrecognised script");
     }
+    if (command === "PING") return "PONG";
     if (command === "DEL") return keys.delete(args[0]) ? 1 : 0;
     throw new Error(`fake upstash got an unexpected command: ${command}`);
   };
@@ -122,6 +123,61 @@ describe("rate-limit store selection", () => {
     const url = createRateLimitService({ UPSTASH_REDIS_REST_URL: "https://fake.upstash.io" }, null, quiet);
     const token = createRateLimitService({ UPSTASH_REDIS_REST_TOKEN: "t" }, null, quiet);
     expect([url.provider, token.provider]).toEqual(["memory", "memory"]);
+  });
+});
+
+describe("credentials that are present but wrong", () => {
+  // Rated critical by review and it is cheap to close: the token is a bearer credential
+  // on every request, and over http:// it crosses the network in the clear.
+  it("refuses an http:// endpoint rather than sending the token in the clear", () => {
+    const logged = [];
+    const service = createRateLimitService(
+      { NODE_ENV: "production", UPSTASH_REDIS_REST_URL: "http://fake.upstash.io", UPSTASH_REDIS_REST_TOKEN: "t" },
+      null,
+      { error: (m) => logged.push(String(m)) }
+    );
+    expect(service.provider).toBe("memory");
+    expect(logged.join(" ")).toMatch(/not https/);
+  });
+
+  it("does not leak the token into the log it writes about the url", () => {
+    const logged = [];
+    createRateLimitService(
+      { NODE_ENV: "production", UPSTASH_REDIS_REST_URL: "http://fake.upstash.io", UPSTASH_REDIS_REST_TOKEN: "super-secret" },
+      null,
+      { error: (m) => logged.push(String(m)) }
+    );
+    expect(logged.join(" ")).not.toContain("super-secret");
+  });
+
+  it("reports unreachable when the credentials do not work", async () => {
+    const upstash = fakeUpstash();
+    upstash.breakWith({ ok: false, status: 401, text: async () => "unauthorized" });
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    // Configured says yes — that was the whole bug: a mistyped token read as healthy
+    // while every AI request 503'd and every other limit passed through uncounted.
+    expect(service.configured).toBe(true);
+    expect(await service.ping()).toBe(false);
+  });
+
+  it("reports reachable when they do", async () => {
+    const service = createRateLimitService({ ...CREDENTIALS }, fakeUpstash().fetchImpl, quiet);
+    expect(await service.ping()).toBe(true);
+  });
+
+  it("caches the probe, because /api/health is public and commands are metered", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    await service.ping();
+    await service.ping();
+    await service.ping();
+    // Otherwise anyone can burn the daily command quota by hammering health — and an
+    // exhausted quota breaks the limiters outright.
+    expect(upstash.calls.filter((c) => c.args[0] === "PING")).toHaveLength(1);
+  });
+
+  it("has nothing to probe on the in-process store", async () => {
+    expect(await createRateLimitService({}, null, quiet).ping()).toBeNull();
   });
 });
 
@@ -305,9 +361,18 @@ describe("the app reports which store is live", () => {
     expect(res.body.rateLimitStore).toBe("memory");
   });
 
-  it("says upstash when it is configured", async () => {
+  it("says upstash when it is configured, and proves it answered", async () => {
     const app = await makeApp(CREDENTIALS, { rateLimits: createRateLimitService(CREDENTIALS, fakeUpstash().fetchImpl, quiet) });
     const res = await request(app).get("/api/health");
-    expect(res.body.rateLimitStore).toBe("upstash");
+    expect([res.body.rateLimitStore, res.body.rateLimitStoreReachable]).toEqual(["upstash", true]);
+  });
+
+  // The smoke test gates a release on this pair, so the unhappy one has to be real.
+  it("admits the store is unreachable rather than reporting it configured", async () => {
+    const upstash = fakeUpstash();
+    upstash.breakWith({ ok: false, status: 401, text: async () => "unauthorized" });
+    const app = await makeApp(CREDENTIALS, { rateLimits: createRateLimitService(CREDENTIALS, upstash.fetchImpl, quiet) });
+    const res = await request(app).get("/api/health");
+    expect([res.body.rateLimitStore, res.body.rateLimitStoreReachable]).toEqual(["upstash", false]);
   });
 });
