@@ -28,6 +28,11 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   MAIL_FROM: z.string().default("Resume94 <onboarding@resend.dev>"),
   RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  // Shared store for rate-limit counters. Both unset means the limiters fall back to
+  // an in-process store, which on serverless counts per instance — correct for local
+  // work and the tests, wrong in production. /api/health reports which one is live.
+  UPSTASH_REDIS_REST_URL: z.string().optional(),
+  UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
   // Basic-auth credentials for /api/docs in production. Unset means the docs are
   // not served there at all.
   DOCS_USER: z.string().optional(),

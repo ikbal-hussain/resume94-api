@@ -114,6 +114,19 @@ async function run() {
     return body.mailProvider;
   });
 
+  await check("health: rate limits share a store", async () => {
+    const { body } = await get("/api/health");
+    // "memory" here means the counters are per serverless instance: every configured
+    // limit is multiplied by however many are warm and resets on each cold start. The
+    // route that matters pays a provider per call, and nothing else in the API shows
+    // this — which is the same class of invisible misconfiguration as MAIL_PROVIDER.
+    expect(
+      body?.rateLimitStore && body.rateLimitStore !== "memory",
+      `rateLimitStore is "${body?.rateLimitStore}" — limits are counted per instance`
+    );
+    return body.rateLimitStore;
+  });
+
   await check("auth: rejects bad credentials with 401, not 500", async () => {
     const { status } = await get("/api/auth/login", {
       method: "POST",

@@ -34,8 +34,34 @@ Every entry below corresponds to work that actually reached `main`.
   coding agents, and a written account of how the system works and why.
 
 ### Changed
+- **Rate-limit counters live in Upstash Redis** when `UPSTASH_REDIS_REST_URL` and
+  `UPSTASH_REDIS_REST_TOKEN` are set, instead of in each process. The default
+  `MemoryStore` counts per serverless instance, so every configured limit was really
+  that limit multiplied by however many instances were warm, and it reset on each cold
+  start — the comment in `routes/ai.js` claiming the import limit capped what one
+  account could spend in an afternoon was not true in production. One key per client
+  per limiter, incremented by a Lua script so `INCR` and its TTL cannot come apart.
+  Reached over Upstash's REST API, so there is no SDK dependency and no socket a
+  serverless function cannot reuse.
+  With the credentials unset the limiters fall back to the in-process store, which is
+  correct for local work and the tests — so `/api/health` now reports `rateLimitStore`
+  and the smoke test **fails** if production is answering on `"memory"`.
+- **A limiter now decides what a counter outage means.** The AI routes fail closed:
+  an unreachable counter answers 503 (`RATE_LIMIT_UNAVAILABLE`), because those routes
+  pay a provider per call and unmetered is worse than unavailable. Auth and resumes
+  fail open, where an outage would only stop someone using their own account.
 - The serverless function's `maxDuration` is raised to 60s. An import waits on a whole
   resume coming back from the provider, which does not fit in the 10s default.
+
+### Fixed
+- The resume limiter's `keyGenerator` read `req.ip` directly as its fallback, which
+  express-rate-limit flags as `ERR_ERL_KEY_GEN_IPV6` — and only *logs*, so it was easy
+  to miss. An IPv6 client can take a fresh address at will, and counting the raw
+  address handed out a fresh bucket with it. It now goes through `ipKeyGenerator`,
+  which counts the /56 subnet.
+- `.env.example` had the Google sign-in block spliced into the middle of the
+  password-reset comment, leaving a stray `MAIL_PROVIDER=resend to send for real.`
+  line. Copying the file set `MAIL_PROVIDER` twice.
 
 ### Security
 - The prompt fence markers are stripped from user content before it is fenced. Text

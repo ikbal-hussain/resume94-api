@@ -27,11 +27,20 @@ const padTo = async (floorMs, startedAt, skip) => {
   if (remaining > 0) await sleep(remaining);
 };
 
-export function authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, testing, log = console }) {
+export function authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log = console }) {
   const r = Router();
+  // Each limiter gets its own counter: sharing one would let a page load's worth of
+  // token probes spend the login budget. All three are keyed by IP through the default
+  // key generator, which already reduces an IPv6 address to its /56 subnet.
+  //
+  // They fail open, like the resume routes and unlike the AI ones. A counter outage
+  // that locked everybody out of signing in would be a worse outage than the brute
+  // force it exists to slow down, and the password hash is the real defence there.
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 20,
+    store: rateLimits.store("auth:attempts:"),
+    passOnStoreError: true,
     standardHeaders: true,
     legacyHeaders: false,
     skip: () => testing,
@@ -43,6 +52,8 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   const resetLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     limit: 5,
+    store: rateLimits.store("auth:reset:"),
+    passOnStoreError: true,
     standardHeaders: true,
     legacyHeaders: false,
     skip: () => testing,
@@ -54,6 +65,8 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   const probeLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 60,
+    store: rateLimits.store("auth:probe:"),
+    passOnStoreError: true,
     standardHeaders: true,
     legacyHeaders: false,
     skip: () => testing,

@@ -1,9 +1,9 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
 import { resumeBodySchema } from "../schemas.js";
 
-export function resumesRouter({ resumes, requireAuth, testing }) {
+export function resumesRouter({ resumes, requireAuth, rateLimits, testing }) {
   const r = Router();
   r.use(requireAuth);
 
@@ -16,7 +16,16 @@ export function resumesRouter({ resumes, requireAuth, testing }) {
       standardHeaders: true,
       legacyHeaders: false,
       skip: () => testing,
-      keyGenerator: (req) => req.user?.id ?? req.ip, // per account, not per IP
+      store: rateLimits.store("resumes:"),
+      // Fail open. A counter outage here must not stop someone saving their own
+      // resume: the worst an unmetered minute costs is database writes we already
+      // pay for, which is not the trade the AI routes make.
+      passOnStoreError: true,
+      // Per account, not per IP. The IP is only a fallback — requireAuth runs first,
+      // so it is reached only if that ever changes. It goes through ipKeyGenerator
+      // because an IPv6 client gets a fresh address at will, and counting the raw
+      // address hands out a fresh bucket with it; the helper counts the /56 subnet.
+      keyGenerator: (req) => req.user?.id ?? ipKeyGenerator(req.ip),
       message: { error: { code: "RATE_LIMITED", message: "Too many requests, slow down a moment" } },
     })
   );
