@@ -17,7 +17,7 @@ The frontend is a separate repository and a separate deployment.
 
 ```bash
 npm run dev      # node --watch on :4100, reads .env if present
-npm test         # vitest run — 99 tests, real Mongo in memory, no mocks of the DB
+npm test         # vitest run — 126 tests, real Mongo in memory, no mocks of the DB
 npm run lint     # eslint
 npm run smoke    # scripts/smoke.mjs against the live deployment (not localhost)
 ```
@@ -72,10 +72,31 @@ failure. Match that. A comment restating the line below it is noise; delete it.
   set it fails closed — cookie `Secure`, the `JWT_SECRET` requirement, the mail
   transport check and the docs guard all stay strict. Set `NODE_ENV=development`
   locally or you will be debugging a cookie that never arrives.
-- **Rate limits use `MemoryStore`, which is per serverless instance.** The effective
-  limit is the configured one multiplied by however many instances are warm, and it
-  resets on every cold start. This is a known gap, tracked, and the fix is a shared
-  Redis store. Do not write a test or a claim that treats the limit as exact.
+- **Rate limits need `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to be
+  exact.** With both set, counters live in Upstash Redis and the configured limit is the
+  real limit. With either unset the limiters fall back to `MemoryStore`, which counts
+  per process — fine locally and in tests, wrong on serverless, where the effective
+  limit becomes the configured one times however many instances are warm and resets on
+  every cold start. `/api/health` reports `rateLimitStore` and the smoke test fails if
+  production is on `"memory"`.
+- **A limiter chooses what a counter outage means.** The AI routes pass
+  `passOnStoreError: false` and are wrapped in `failClosed` — an unreachable counter
+  answers 503, because those routes pay a provider per call and unmetered is worse than
+  unavailable. Auth and resumes pass `passOnStoreError: true`: there an outage would
+  only stop someone using their own account. Keep a new limiter on the side its route
+  belongs to, and note that `failClosed` must read `next`'s argument — a wrapper that
+  ignores it silently turns fail-closed back into fail-open while the options still say
+  otherwise.
+- **An IP-keyed limit is not a per-person limit, and now it actually binds.** The auth
+  limiters key on IP, and an office, a campus or an Indian mobile carrier behind CGNAT
+  is thousands of people on one address. While the counters were per instance this
+  barely mattered; with a shared store the configured number is the real ceiling for
+  everyone on that address at once. That is why these are 100 per 15 minutes rather
+  than 20. Think about the shared-address case before tightening one.
+- **A custom `keyGenerator` that touches `req.ip` must go through `ipKeyGenerator`.**
+  An IPv6 client can take a fresh address whenever it likes, so counting the raw address
+  hands out a fresh bucket with it. express-rate-limit logs `ERR_ERL_KEY_GEN_IPV6` when
+  it spots this, and logs it — it does not throw, so it is easy to miss.
 - **Transactions need a replica set.** Atlas is one, a standalone local `mongod` is
   not. `makeWithTransaction` probes once and degrades to sequential writes with a
   warning, so local work keeps going — but a multi-write flow is only atomic in

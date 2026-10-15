@@ -185,6 +185,21 @@ export function buildOpenApiDocument() {
                   aiProvider: { type: "string", enum: ["gemini", "groq"] },
                   mailConfigured: { type: "boolean" },
                   mailProvider: { type: "string", enum: ["console", "resend"] },
+                  googleConfigured: { type: "boolean" },
+                  rateLimitStoreReachable: {
+                    type: "boolean",
+                    nullable: true,
+                    description:
+                      "Whether the shared counter actually answered, not merely whether it is " +
+                      "configured. null when the in-process store is in use.",
+                  },
+                  rateLimitStore: {
+                    type: "string",
+                    enum: ["memory", "upstash"],
+                    description:
+                      '"memory" counts per serverless instance, so every limit is multiplied by the ' +
+                      "number of warm instances and resets on each cold start. The smoke test fails on it.",
+                  },
                 },
               }),
             },
@@ -201,7 +216,7 @@ export function buildOpenApiDocument() {
             201: { description: "Account created; session cookie set", ...json(userResponse) },
             400: validation,
             409: error("That email is already registered"),
-            429: error("Too many attempts (20 per 15 minutes per IP)"),
+            429: error("Too many attempts (100 per 15 minutes per IP)"),
           },
         },
       },
@@ -215,7 +230,7 @@ export function buildOpenApiDocument() {
           responses: {
             200: { description: "Signed in; session cookie set", ...json(userResponse) },
             401: error("Invalid email or password"),
-            429: error("Too many attempts (20 per 15 minutes per IP)"),
+            429: error("Too many attempts (100 per 15 minutes per IP)"),
           },
         },
       },
@@ -237,7 +252,7 @@ export function buildOpenApiDocument() {
             401: error("The token could not be verified"),
             403: error("Google has not verified this email address"),
             409: error("That account is linked to a different Google account, or the email was taken in a race"),
-            429: error("Too many attempts (20 per 15 minutes per IP)"),
+            429: error("Too many attempts (100 per 15 minutes per IP)"),
             503: error("Google sign-in is not configured on this server"),
           },
         },
@@ -254,7 +269,7 @@ export function buildOpenApiDocument() {
           responses: {
             204: { description: "Request accepted (sent only if the account exists)" },
             400: error("The email field is missing or malformed"),
-            429: error("Too many reset requests (5 per hour per IP)"),
+            429: error("Too many reset requests (20 per hour per IP)"),
           },
         },
       },
@@ -285,7 +300,7 @@ export function buildOpenApiDocument() {
           responses: {
             200: { description: "Password changed; session cookie set", ...json(userResponse) },
             400: error("The link is invalid, already used, or expired"),
-            429: error("Too many reset attempts (5 per hour per IP)"),
+            429: error("Too many reset attempts (20 per hour per IP)"),
           },
         },
       },
@@ -402,7 +417,7 @@ export function buildOpenApiDocument() {
             401: unauthorized,
             429: error("Per-user AI rate limit reached"),
             502: error("The provider rejected the request (bad key, unknown model, or upstream failure)"),
-            503: error("No AI provider key is configured"),
+            503: error("No AI provider key is configured, or the usage limiter is unreachable"),
           },
         },
       },
@@ -421,7 +436,7 @@ export function buildOpenApiDocument() {
             401: unauthorized,
             429: error("Per-user AI rate limit reached"),
             502: error("The provider rejected the request"),
-            503: error("No AI provider key is configured"),
+            503: error("No AI provider key is configured, or the usage limiter is unreachable"),
           },
         },
       },
@@ -451,7 +466,7 @@ export function buildOpenApiDocument() {
             401: unauthorized,
             429: error("Import rate limit reached (5 per 10 minutes)"),
             502: error("The provider failed, or did not return usable JSON"),
-            503: error("No AI provider key is configured"),
+            503: error("No AI provider key is configured, or the usage limiter is unreachable"),
           },
         },
       },

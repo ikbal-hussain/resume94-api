@@ -209,11 +209,21 @@ Four layers, weakest to strongest:
    A 2 MB body cannot reach the model.
 4. **Body size cap** — `express.json({ limit: "2mb" })`, which returns 413.
 
-**The known hole:** the rate limiter's `MemoryStore` is per serverless instance. Ten
-warm instances means an effective limit near 100/minute, and a cold start resets the
-window. It is honest to describe this as best-effort. The fix is a shared store
-(Upstash Redis), tracked, plus a daily per-account quota — a per-minute limit bounds
-burst, not total spend.
+The limit is only as good as where it is counted. `MemoryStore` counts per process, so
+on serverless ten warm instances meant an effective limit near 100/minute and a cold
+start reset the window — the comment claiming this capped what an account could spend in
+an afternoon was false in production. Counters now live in Upstash Redis
+(`UPSTASH_REDIS_REST_URL` / `_TOKEN`), one key per client per limiter, incremented by a
+Lua script so the INCR and its TTL cannot come apart. `/api/health` reports which store
+is live and the smoke test fails if production is on `"memory"`, because that is a
+misconfiguration no route would otherwise reveal.
+
+The AI limiters **fail closed**: if the counter is unreachable they answer 503 rather
+than let unmetered calls through, since these are the routes that pay per call. Auth
+and resumes fail open — there an outage would only stop someone using their own account.
+
+**The remaining hole:** a per-minute limit bounds burst, not total spend. An absolute
+per-account quota is still tracked separately.
 
 ## Password reset
 
@@ -287,16 +297,21 @@ advertise that the route exists at all.
 
 These are real and stated deliberately — each has a tracked fix.
 
-1. **Rate limits are per instance.** Best-effort on serverless. Needs a shared Redis
-   store.
-2. **No total AI spend cap.** A per-minute limit bounds burst, not the monthly bill.
-   Needs a daily per-account quota.
-3. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
+1. **No total AI spend cap.** A per-minute limit bounds burst, not the monthly bill.
+   Needs a daily per-account quota. (Rate limits themselves are no longer per instance:
+   the counters moved to Upstash Redis. With the credentials unset they fall back to the
+   in-process store, which is why `/api/health` reports the live one.)
+2. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
    the user on every request, which covers deletion; the full answer is short-lived
    access tokens plus rotating refresh tokens.
-4. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
+3. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
    (Mumbai)**, costing roughly 200 ms per database round trip. Measured, not guessed.
-   The fix is `"regions": ["bom1"]` in `vercel.json`.
-5. **Profile photos are base64 inside the resume document.** Object storage would be
+   `"regions": ["bom1"]` in `vercel.json` is the obvious fix and **this account cannot
+   use it**: a deployment carrying it fails before the build starts, with a 0ms build
+   and no log, while the identical tree without it deploys. Region selection is a paid
+   feature. Everything the function talks to should therefore be co-located with
+   `iad1`, not with Mumbai — which is why the Upstash database is in `us-east-1` even
+   though the users and the database are in India.
+4. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
-6. **No error tracking.** A 500 in production is visible only in Vercel's logs.
+5. **No error tracking.** A 500 in production is visible only in Vercel's logs.

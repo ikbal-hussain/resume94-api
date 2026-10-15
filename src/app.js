@@ -9,6 +9,7 @@ import { passwordResetsRepo } from "./repositories/passwordResets.js";
 import { createAiService } from "./services/ai/index.js";
 import { createMailService } from "./services/mail/index.js";
 import { createGoogleService } from "./services/google.js";
+import { createRateLimitService } from "./services/rateLimit/index.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { makeWithTransaction } from "./db.js";
@@ -29,6 +30,9 @@ export function createApp(config, {
   ai = createAiService(config),
   mail = createMailService(config, fetch, log),
   google = createGoogleService(config),
+  // Counters for the rate limiters. Injected like the others so a test can assert on
+  // hits without a network, and so an unconfigured store degrades instead of throwing.
+  rateLimits = createRateLimitService(config, fetch, log),
   // Injectable so a test can force the losing side of a race that is otherwise a
   // microsecond wide between two queries.
   users = usersRepo(db),
@@ -92,11 +96,20 @@ export function createApp(config, {
       mailConfigured: mail.configured,
       mailProvider: mail.provider,
       googleConfigured: google.configured,
+      // "memory" in production means every limit is multiplied by the number of warm
+      // instances. Nothing else in the API shows that, and the route it matters most on
+      // is the one that pays a provider per call.
+      rateLimitStore: rateLimits.provider,
+      // Reachable, not merely configured. A mistyped token reads as "upstash" from the
+      // line above while every AI request 503s and every other limit passes through
+      // uncounted, so this is probed the way the database above is pinged rather than
+      // inferred from the environment. null when there is nothing to reach.
+      rateLimitStoreReachable: await rateLimits.ping(),
     });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, testing, log }));
-  app.use("/api/resumes", resumesRouter({ resumes, requireAuth, testing }));
-  app.use("/api/ai", aiRouter({ ai, requireAuth, testing }));
+  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
+  app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
+  app.use("/api/ai", aiRouter({ ai, requireAuth, rateLimits, testing, log }));
 
   app.use(notFound);
   app.use(errorHandler(log));
