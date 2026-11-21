@@ -33,6 +33,7 @@ describe("API documentation", () => {
       "/resumes",
       "/resumes/{id}",
       "/resumes/{id}/duplicate",
+      "/ai/usage",
       "/ai/summary",
       "/ai/improve",
     ]) {

@@ -39,6 +39,12 @@ const schema = z.object({
   // "true" with a paid key, where an unmetered minute costs money and refusing is cheaper.
   // Read leniently in loadConfig (see readBoolean): a typo here must not take down auth.
   AI_FAIL_CLOSED: z.boolean().default(false),
+  // Daily AI allowance. Credits per account (a summary or a bullet costs 1, an import 5),
+  // and tokens for the whole app, counted from what the provider reports. The token
+  // default sits under Groq's free tier of 200,000 a day; raise both with a paid key.
+  // Read leniently too (see readPositiveInt).
+  AI_DAILY_CREDITS_PER_USER: z.number().int().positive().default(30),
+  AI_DAILY_TOKENS_GLOBAL: z.number().int().positive().default(180_000),
   // Bearer secret Vercel Cron sends with the weekly keep-alive. Unset means the route
   // answers 404, so the job is off by default and inert on any other host. Empty or
   // shorter than 16 characters counts as unset, with a warning (see loadConfig).
@@ -71,6 +77,16 @@ function readBoolean(env, name, fallback, warn) {
   return fallback;
 }
 
+/** A positive whole number, or the default with a warning: same reasoning as readBoolean. */
+function readPositiveInt(env, name, fallback, warn) {
+  const raw = env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const value = Number(String(raw).trim().replace(/_/g, ""));
+  if (Number.isInteger(value) && value > 0) return value;
+  warn(`[config] ${name}="${raw}" is not a positive whole number; using the default (${fallback}).`);
+  return fallback;
+}
+
 /** A secret that is empty counts as unset; one too short to be safe is ignored, loudly. */
 function readSecret(env, name, minLength, warn) {
   const raw = env[name];
@@ -87,6 +103,8 @@ export function loadConfig(env = process.env, { warn = console.warn } = {}) {
     ...env,
     AI_FAIL_CLOSED: readBoolean(env, "AI_FAIL_CLOSED", false, warn),
     CRON_SECRET: readSecret(env, "CRON_SECRET", 16, warn),
+    AI_DAILY_CREDITS_PER_USER: readPositiveInt(env, "AI_DAILY_CREDITS_PER_USER", 30, warn),
+    AI_DAILY_TOKENS_GLOBAL: readPositiveInt(env, "AI_DAILY_TOKENS_GLOBAL", 180_000, warn),
   });
   if (!cfg.JWT_SECRET) {
     if (cfg.NODE_ENV === "production") {

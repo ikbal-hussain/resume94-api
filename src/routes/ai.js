@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import { validateBody } from "../middleware/errors.js";
 import { failClosed } from "../middleware/rateLimit.js";
 import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "../schemas.js";
+import { AI_COSTS } from "../services/aiQuota.js";
 
 // What happens when the shared counter cannot be reached is a setting, because the right
 // answer depends on whether the provider key costs money.
@@ -20,10 +21,41 @@ import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "
 // never see an error.
 const COUNTER_UNREACHABLE = "AI is briefly unavailable — the usage limiter cannot be reached";
 
-export function aiRouter({ config, ai, requireAuth, rateLimits, testing, log = console }) {
+export function aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log = console }) {
   const r = Router();
   const degrade = !config.AI_FAIL_CLOSED;
   r.use(requireAuth);
+
+  // Today's credits, for the meter in the AI dialogs. Registered before the per-minute
+  // limiter on purpose: it costs nothing, and the frontend reads it whenever a dialog
+  // opens — counting it would let opening dialogs lock someone out of using them.
+  r.get("/usage", async (req, res) => {
+    res.json(await aiQuota.usage(req.user.id));
+  });
+
+  /**
+   * Runs one AI call against the daily allowance.
+   *
+   * Credits are reserved before the provider is called, so two requests cannot both spend
+   * the last one, and refunded if the call fails for any reason: validation already ran,
+   * so a failure here is ours or the provider's, never the user's. The tokens the call
+   * used are added to the app's budget either way — an unusable reply still spent them.
+   * The response carries the usage after the charge, so the meter updates without
+   * another request.
+   */
+  const charged = (kind, call) => async (req, res) => {
+    const cost = AI_COSTS[kind];
+    const usage = await aiQuota.reserve(req.user.id, cost);
+    let tokens = 0;
+    try {
+      res.json({ ...(await call(req.body, { onTokens: (n) => (tokens += n) })), usage });
+    } catch (err) {
+      await aiQuota.refund(req.user.id, cost);
+      throw err;
+    } finally {
+      await aiQuota.recordTokens(tokens);
+    }
+  };
   // Per-user (not per-IP) limit: AI calls cost money.
   r.use(
     failClosed(
@@ -43,12 +75,16 @@ export function aiRouter({ config, ai, requireAuth, rateLimits, testing, log = c
     )
   );
 
-  r.post("/summary", validateBody(summaryRequestSchema), async (req, res) => {
-    res.json({ text: await ai.summary(req.body) });
-  });
-  r.post("/improve", validateBody(improveRequestSchema), async (req, res) => {
-    res.json({ text: await ai.improve(req.body) });
-  });
+  r.post(
+    "/summary",
+    validateBody(summaryRequestSchema),
+    charged("summary", async (body, opts) => ({ text: await ai.summary(body, opts) }))
+  );
+  r.post(
+    "/improve",
+    validateBody(improveRequestSchema),
+    charged("improve", async (body, opts) => ({ text: await ai.improve(body, opts) }))
+  );
 
   // An import sends a whole resume and asks for a whole resume back, so one call costs
   // roughly what twenty summaries cost. It is also something a person does once and
@@ -79,8 +115,11 @@ export function aiRouter({ config, ai, requireAuth, rateLimits, testing, log = c
   // five-per-ten-minutes budget would let a client bug lock someone out of importing
   // for ten minutes without a single call having been made. Malformed requests are
   // still bounded by the router-wide limit above.
-  r.post("/import", validateBody(importResumeSchema), importLimiter, async (req, res) => {
-    res.json({ data: await ai.parseResume(req.body) });
-  });
+  r.post(
+    "/import",
+    validateBody(importResumeSchema),
+    importLimiter,
+    charged("import", async (body, opts) => ({ data: await ai.parseResume(body, opts) }))
+  );
   return r;
 }

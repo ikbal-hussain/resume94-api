@@ -33,6 +33,18 @@ Every entry below corresponds to work that actually reached `main`.
 - `/api/health` reports `rateLimitFallbackActive` while limiters are counting in-process.
 
 ### Added
+- **A daily AI allowance per account, and a daily token budget for the app.** Each account
+  gets `AI_DAILY_CREDITS_PER_USER` credits a day (default 30): a summary or a bullet costs
+  1, an import 5. Past it, AI routes answer 429 `AI_QUOTA_EXCEEDED` with `Retry-After`.
+  The app stops at `AI_DAILY_TOKENS_GLOBAL` tokens a day (default 180,000, under Groq's
+  free 200,000), counted from what the provider reports each call used; past it, 503
+  `AI_BUDGET_EXHAUSTED` for everyone. Resets at midnight UTC (05:30 IST).
+  - Credits are reserved atomically before the call and refunded if it fails; tokens are
+    counted either way.
+  - `GET /api/ai/usage` returns `{ used, limit, remaining, resetsAt, available }`, and
+    every AI answer now carries `usage` alongside `text` / `data`.
+  - Providers now report token usage (`usage.total_tokens` for Groq,
+    `usageMetadata.totalTokenCount` for Gemini).
 - The health probe **writes a key and reads it back** instead of sending a PING, which
   proves a counter would be stored and is certainly activity for Upstash's 14-day idle
   timer: the uptime monitor on `/api/health` now keeps the free database alive.

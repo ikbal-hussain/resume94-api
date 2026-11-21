@@ -10,6 +10,7 @@ import { createAiService } from "./services/ai/index.js";
 import { createMailService } from "./services/mail/index.js";
 import { createGoogleService } from "./services/google.js";
 import { createRateLimitService } from "./services/rateLimit/index.js";
+import { createAiQuota } from "./services/aiQuota.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
 import { makeWithTransaction, pingDatabase } from "./db.js";
@@ -34,6 +35,9 @@ export function createApp(config, {
   // Counters for the rate limiters. Injected like the others so a test can assert on
   // hits without a network, and so an unconfigured store degrades instead of throwing.
   rateLimits = createRateLimitService(config, fetch, log),
+  // Daily AI credits per account and tokens per app, in the same Upstash database as the
+  // limiters and sharing their breaker, so both agree about when it is down.
+  aiQuota = createAiQuota(config, { command: rateLimits.command, breaker: rateLimits.breaker, log }),
   // Injectable so a test can force the losing side of a race that is otherwise a
   // microsecond wide between two queries.
   users = usersRepo(db),
@@ -128,7 +132,7 @@ export function createApp(config, {
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
-  app.use("/api/ai", aiRouter({ config, ai, requireAuth, rateLimits, testing, log }));
+  app.use("/api/ai", aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
   app.use("/api/cron", cronRouter({ config, rateLimits, log }));
 
   app.use(notFound);

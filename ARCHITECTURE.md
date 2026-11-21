@@ -238,8 +238,28 @@ used. A weekly Vercel Cron (`GET /api/cron/keepalive`, Mondays 08:30 IST, bearer
 `CRON_SECRET`) is the fallback for when monitoring is paused; it writes a key of its own
 and never touches a counter.
 
-**The remaining hole:** a per-minute limit bounds burst, not total spend. An absolute
-per-account quota is still tracked separately.
+**The daily allowance** (`services/aiQuota.js`) bounds the day, which a per-minute limit
+cannot: ten calls a minute is 14,400 a day from one account, against roughly 1,000
+requests and 200,000 tokens a day for the whole app on Groq's free tier.
+
+- **Per account:** `AI_DAILY_CREDITS_PER_USER` credits a day (default 30). A summary or a
+  bullet costs 1, an import 5 (`AI_COSTS`). Over it: 429 `AI_QUOTA_EXCEEDED` with
+  `Retry-After`.
+- **Per app:** `AI_DAILY_TOKENS_GLOBAL` tokens a day (default 180,000), counted from the
+  `usage` each provider reports — reasoning tokens included — or estimated at four
+  characters a token when it reports none. Over it: 503 `AI_BUDGET_EXHAUSTED` for
+  everyone. This is also the backstop for accounts multiplied to get more credits, since
+  registration has no email verification yet.
+- **Reserve, then refund.** One Lua script checks both limits and spends the credits
+  atomically, so two requests cannot both take the last one. If the call then fails, the
+  credits come back: validation has already passed, so the failure is ours or the
+  provider's. The tokens are counted either way.
+- Days are UTC; the allowance resets at 05:30 IST. Counters live in the limiters' Upstash
+  database, share their breaker, and fall back to in-process counts the same way —
+  refusing instead under `AI_FAIL_CLOSED`.
+- `GET /api/ai/usage` reports the allowance for the meter in the AI dialogs, and every AI
+  answer carries the usage after its charge. The usage route sits before the per-minute
+  limiter, so reading it never costs a call.
 
 ## Password reset
 
@@ -313,10 +333,10 @@ advertise that the route exists at all.
 
 These are real and stated deliberately — each has a tracked fix.
 
-1. **No total AI spend cap.** A per-minute limit bounds burst, not the monthly bill.
-   Needs a daily per-account quota. (Rate limits themselves are no longer per instance:
-   the counters moved to Upstash Redis. With the credentials unset they fall back to the
-   in-process store, which is why `/api/health` reports the live one.)
+1. **The daily AI allowance can be multiplied with more accounts**, because registration
+   has no email verification. The app-wide token budget caps the damage — the worst case
+   is AI resting until tomorrow — but it is shared, so one person with many accounts can
+   still spend everyone's day.
 2. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
    the user on every request, which covers deletion; the full answer is short-lived
    access tokens plus rotating refresh tokens.

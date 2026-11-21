@@ -191,6 +191,43 @@ describe("ai service — provider selection", () => {
   });
 });
 
+describe("token accounting", () => {
+  const cfg = (o = {}) => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(20), ...o });
+  const args = { role: "a", experience: "b", keySkills: "c" };
+
+  it("reports what Groq says the call used, reasoning included", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }], usage: { total_tokens: 812 } }) });
+    const seen = [];
+    await createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl).summary(args, { onTokens: (n) => seen.push(n) });
+    expect(seen).toEqual([812]);
+  });
+
+  it("reports what Gemini says the call used", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: "hi" }] } }], usageMetadata: { totalTokenCount: 333 } }),
+    });
+    const seen = [];
+    await createAiService(cfg({ GEMINI_API_KEY: "k" }), fetchImpl).improve({ section: "projects", content: "x" }, { onTokens: (n) => seen.push(n) });
+    expect(seen).toEqual([333]);
+  });
+
+  it("estimates when the provider does not say, so the budget never stops moving", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }] }) });
+    const seen = [];
+    await createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl).summary(args, { onTokens: (n) => seen.push(n) });
+    expect(seen[0]).toBeGreaterThan(0);
+  });
+
+  it("counts the tokens even when the reply is unusable", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "no json here" } }], usage: { total_tokens: 4000 } }) });
+    const seen = [];
+    const ai = createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl);
+    await expect(ai.parseResume({ text: "x".repeat(300) }, { onTokens: (n) => seen.push(n) })).rejects.toMatchObject({ status: 502 });
+    expect(seen).toEqual([4000]);
+  });
+});
+
 describe("gemini provider", () => {
   const cfg = (o = {}) => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(20), ...o });
 

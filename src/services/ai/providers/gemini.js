@@ -34,6 +34,9 @@ export const gemini = {
     } catch {
       throw new HttpError(502, "The gemini response could not be read", "AI_UPSTREAM");
     }
-    return payload?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    return {
+      text: payload?.candidates?.[0]?.content?.parts?.[0]?.text?.trim(),
+      tokens: payload?.usageMetadata?.totalTokenCount ?? null,
+    };
   },
 };
