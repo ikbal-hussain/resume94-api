@@ -6,18 +6,49 @@ import { MemoryStore } from "express-rate-limit";
  * Every Upstash call carries a 2 s deadline. Without a breaker, an Upstash that hangs
  * rather than refusing would add those two seconds to every limited request for as long
  * as the outage lasts — the limiter would become the slowest thing in the API, which is
- * the one thing a limiter must never be. One failure opens the breaker for the cool-down;
- * the first request after it tries Upstash again.
+ * the one thing a limiter must never be.
+ *
+ * Three states. **Closed**: every call goes to Upstash. **Open**: one failure trips it and
+ * every call counts in memory for the cool-down. **Half-open**: after the cool-down exactly
+ * one call is let through as a probe while everyone else stays on memory; the probe
+ * succeeding closes the breaker, failing re-opens it. Letting every request through at the
+ * end of the cool-down instead would send a burst of 2 s calls — and a burst of log
+ * lines — at an Upstash that is still down, every 30 s for the length of the outage.
  *
  * One breaker per rate-limit service, shared by every store it hands out: if Upstash is
  * down for the login limiter it is down for the AI limiter too.
  */
 export function createBreaker({ coolDownMs = 30_000, now = Date.now } = {}) {
-  let openUntil = 0;
+  let openUntil = 0; // 0 = closed
+  let probing = false;
   return {
-    isOpen: () => now() < openUntil,
-    trip: () => {
+    /** True while calls should skip the shared store: open, or half-open with the probe out. */
+    isOpen: () => openUntil !== 0,
+    /**
+     * Claims permission to call the shared store. Always granted while closed; after the
+     * cool-down, granted to exactly one caller (the probe) until it reports back.
+     */
+    tryAcquire() {
+      if (openUntil === 0) return true;
+      if (probing || now() < openUntil) return false;
+      probing = true;
+      return true;
+    },
+    /** A call succeeded: close. */
+    succeed() {
+      openUntil = 0;
+      probing = false;
+    },
+    /**
+     * A call failed: open for the cool-down. Returns true only on a transition — from
+     * closed, or from a failed probe — so a caller can log once per trip rather than once
+     * for every request that was in flight when Upstash went away.
+     */
+    trip() {
+      const transition = openUntil === 0 || probing;
       openUntil = now() + coolDownMs;
+      probing = false;
+      return transition;
     },
   };
 }
@@ -57,15 +88,18 @@ export class FallbackStore {
   }
 
   async #run(method, key) {
-    if (!this.breaker.isOpen()) {
+    if (this.breaker.tryAcquire()) {
       try {
-        return await this.primary[method](key);
+        const result = await this.primary[method](key);
+        this.breaker.succeed();
+        return result;
       } catch (err) {
-        this.breaker.trip();
-        this.log.error?.(
-          `[rate-limit] shared store failed on ${method}; counting in this process until it answers again`,
-          err
-        );
+        if (this.breaker.trip()) {
+          this.log.error?.(
+            `[rate-limit] shared store failed on ${method}; counting in this process until it answers again`,
+            err
+          );
+        }
       }
     }
     return this.memory[method](key);
@@ -75,11 +109,31 @@ export class FallbackStore {
     return this.#run("increment", key);
   }
 
+  /**
+   * Known limitation: `decrement` goes wherever the breaker points now, not necessarily
+   * to the store that took the matching `increment`, so a breaker flip mid-request can
+   * lower the other store's counter. express-rate-limit only calls it for limiters with
+   * `skipFailedRequests` / `skipSuccessfulRequests`, and none sets those today. A limiter
+   * that adds them needs per-request routing here first.
+   */
   decrement(key) {
     return this.#run("decrement", key);
   }
 
-  resetKey(key) {
-    return this.#run("resetKey", key);
+  /**
+   * Clears the key in both stores: after an outage the client may have hits in either,
+   * and a reset that cleared only one would leave the other still limiting them. The
+   * shared store is best-effort and skipped while the breaker is open (it would only
+   * spend the 2 s deadline failing).
+   */
+  async resetKey(key) {
+    await this.memory.resetKey(key);
+    if (!this.breaker.tryAcquire()) return;
+    try {
+      await this.primary.resetKey(key);
+      this.breaker.succeed();
+    } catch (err) {
+      if (this.breaker.trip()) this.log.error?.("[rate-limit] shared store failed on resetKey", err);
+    }
   }
 }

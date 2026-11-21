@@ -118,6 +118,12 @@ export function createApp(config, {
       // its in-process fallback, so this is probed rather than inferred from the
       // environment. null when there is nothing to reach.
       rateLimitStoreReachable,
+      // True while a recent Upstash failure has the limiters counting in this process
+      // (the breaker is open). The probe above is cached for 30 s and runs on its own, so
+      // without this an Upstash that keeps timing out on counter calls but answers the
+      // probe would read as healthy while limits were per instance. Reported, not part of
+      // the 503 verdict: degraded limits are a warning, and the probe owns "down".
+      rateLimitFallbackActive: rateLimits.fallbackActive(),
     });
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));

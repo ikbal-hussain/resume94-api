@@ -61,6 +61,11 @@ error case in a route. The client contract is
 `{ "error": { "code", "message", "details?" } }` and the handler is the only place that
 knows it.
 
+One deliberate exception: **`/api/health` answers 503 with its full health payload**,
+not the error envelope. Uptime monitors and the smoke test read that body to see which
+dependency failed (`databaseReachable`, `rateLimitStoreReachable`), and an error
+envelope would hide exactly the fields they key on.
+
 **Comments explain why, not what.** The existing comments in this repo record the
 reasoning behind a non-obvious decision — why the docs 404 instead of prompting, why
 the basic-auth header is split on the first colon only, why `appPromise` is reset on

@@ -68,9 +68,39 @@ describe("weekly keep-alive", () => {
     expect([res.status, res.body.error.code]).toEqual([503, "KEEPALIVE_FAILED"]);
   });
 
-  it("rejects a secret too short to be one", () => {
-    expect(() => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(32), CRON_SECRET: "short" })).toThrow(
-      /CRON_SECRET/
-    );
+  // A bad cron secret must switch the cron off, not take every route down with it.
+  it("ignores a secret too short to be one, with a warning, instead of refusing to start", () => {
+    const warnings = [];
+    const cfg = loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(32), CRON_SECRET: "short" }, { warn: (m) => warnings.push(m) });
+    expect(cfg.CRON_SECRET).toBeUndefined();
+    expect(warnings.join()).toMatch(/CRON_SECRET is shorter than 16/);
+  });
+
+  it("treats an empty secret as unset, as an uncommented .env.example line would give", () => {
+    const warnings = [];
+    const cfg = loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(32), CRON_SECRET: "" }, { warn: (m) => warnings.push(m) });
+    expect(cfg.CRON_SECRET).toBeUndefined();
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe("AI_FAIL_CLOSED", () => {
+  const read = (value) => {
+    const warnings = [];
+    const cfg = loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(32), AI_FAIL_CLOSED: value }, { warn: (m) => warnings.push(m) });
+    return { on: cfg.AI_FAIL_CLOSED, warnings };
+  };
+
+  it("accepts the usual spellings, in any case", () => {
+    for (const v of ["true", "TRUE", "1", "yes", "On"]) expect(read(v).on).toBe(true);
+    for (const v of ["false", "False", "0", "no", "OFF", ""]) expect(read(v).on).toBe(false);
+  });
+
+  // config.js already records the lesson: a strict parse over one feature's setting took
+  // auth, resumes and AI down together.
+  it("falls back to the default with a warning on anything else, instead of throwing", () => {
+    const { on, warnings } = read("maybe");
+    expect(on).toBe(false);
+    expect(warnings.join()).toMatch(/AI_FAIL_CLOSED="maybe"/);
   });
 });

@@ -21,7 +21,16 @@ Every entry below corresponds to work that actually reached `main`.
   can judge it by status code. A MongoDB failure used to surface as a 500 `INTERNAL`.
   The ping has a 5 s deadline.
 - The smoke test's wait for the new commit accepts a 503 body, so a failing dependency is
-  reported as itself rather than as "deploy never went live".
+  reported as itself rather than as "deploy never went live". Its database check now
+  judges only `databaseReachable`; a rate-limit store outage is reported by the store check
+  alone instead of pointing at MongoDB too.
+- `AI_FAIL_CLOSED` accepts the usual true/false spellings and `CRON_SECRET` treats empty
+  or too-short values as unset; an unrecognised value logs a warning instead of stopping
+  the whole API at startup.
+- After the 30 s cool-down the breaker lets **one** probe through instead of every waiting
+  request, and logs once per trip even when requests fail concurrently. `resetKey` clears
+  both the shared and the in-process count.
+- `/api/health` reports `rateLimitFallbackActive` while limiters are counting in-process.
 
 ### Added
 - The health probe **writes a key and reads it back** instead of sending a PING, which

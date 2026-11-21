@@ -96,12 +96,12 @@ const expect = (condition, message) => {
 async function run() {
   await waitForDeploy();
 
-  await check("health: 200, database reachable", async () => {
+  // Only the database. Health also answers 503 when the rate-limit store is down, and
+  // that outage belongs to the "rate limits share a store" check below: failing here too
+  // would point whoever is on call at MongoDB for an Upstash problem.
+  await check("health: database reachable", async () => {
     const { status, body } = await get("/api/health");
-    // 503 means a dependency failed; say which one rather than only the status code.
-    expect(body?.databaseReachable === true, `databaseReachable was ${body?.databaseReachable}`);
-    expect(status === 200, `expected 200, got ${status} (status "${body?.status}")`);
-    expect(body?.status === "ok", `status was ${body?.status}`);
+    expect(body?.databaseReachable === true, `databaseReachable was ${body?.databaseReachable} (HTTP ${status})`);
     return `commit ${body.commit ? body.commit.slice(0, 7) : "unknown"}`;
   });
 

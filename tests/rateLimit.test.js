@@ -312,6 +312,26 @@ describe("the app reports which store is live", () => {
     // And says so in the status code, which is all an uptime monitor reads.
     expect([res.status, res.body.status]).toEqual([503, "degraded"]);
   });
+
+  // The probe is cached and runs on its own; a counter call that just failed is what
+  // puts the limiters on memory, and only the breaker knows about it.
+  it("reports when the limiters have fallen back to counting in this process", async () => {
+    const service = createRateLimitService(CREDENTIALS, fakeUpstash().fetchImpl, quiet);
+    const app = await makeApp(CREDENTIALS, { rateLimits: service });
+    expect((await request(app).get("/api/health")).body.rateLimitFallbackActive).toBe(false);
+
+    const failing = { prefix: "x:", init() {}, increment: async () => Promise.reject(new Error("timeout")) };
+    const store = service.store("x:");
+    store.primary = failing;
+    store.init({ windowMs: 60_000 });
+    await store.increment("ada");
+    const res = await request(app).get("/api/health");
+    expect([res.status, res.body.rateLimitFallbackActive]).toEqual([200, true]);
+  });
+
+  it("reports no fallback on the in-process store, where there is nothing to fall back from", async () => {
+    expect((await request(await makeApp()).get("/api/health")).body.rateLimitFallbackActive).toBe(false);
+  });
 });
 
 describe("degrading instead of failing when the shared store is down", () => {
@@ -393,6 +413,93 @@ describe("degrading instead of failing when the shared store is down", () => {
     now = 30_001;
     await store.increment("ada");
     expect(calls).toBe(2);
+  });
+
+  // Letting everyone through at the end of the cool-down would send a burst of 2 s calls,
+  // and a burst of log lines, at an Upstash that is still down, every 30 s.
+  it("lets exactly one probe through after the cool-down, and closes when it succeeds", async () => {
+    let now = 0;
+    const breaker = createBreaker({ coolDownMs: 30_000, now: () => now });
+    let calls = 0;
+    let healthy = false;
+    let release;
+    const primary = {
+      prefix: "test:",
+      init() {},
+      async increment() {
+        calls++;
+        if (!healthy) throw new Error("down");
+        if (calls === 2) await new Promise((r) => (release = r)); // hold the probe open
+        return { totalHits: 1, resetTime: undefined };
+      },
+    };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+
+    await store.increment("ada");
+    expect(calls).toBe(1);
+    now = 30_001;
+    healthy = true;
+    const probe = store.increment("ada"); // the probe, held open
+    await Promise.all([store.increment("ada"), store.increment("ada")]); // others stay on memory
+    expect(calls).toBe(2);
+    expect(breaker.isOpen()).toBe(true);
+
+    release();
+    await probe;
+    expect(breaker.isOpen()).toBe(false);
+    await store.increment("ada");
+    expect(calls).toBe(3);
+  });
+
+  it("re-opens for another cool-down when the probe fails", async () => {
+    let now = 0;
+    const breaker = createBreaker({ coolDownMs: 30_000, now: () => now });
+    let calls = 0;
+    const primary = { prefix: "t:", init() {}, increment: async () => (calls++, Promise.reject(new Error("down"))) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.increment("ada");
+    now = 30_001;
+    await store.increment("ada"); // probe fails
+    now = 40_000;
+    await store.increment("ada");
+    expect(calls).toBe(2);
+  });
+
+  // After an outage the client may have hits in either store; clearing one would leave
+  // the other still limiting them.
+  it("resets a key in both stores", async () => {
+    const breaker = createBreaker();
+    const reset = [];
+    const primary = { prefix: "t:", init() {}, increment: async () => ({ totalHits: 1 }), resetKey: async (k) => reset.push(k) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.memory.increment("ada");
+    await store.resetKey("ada");
+    expect(reset).toEqual(["ada"]);
+    expect((await store.memory.get("ada"))?.totalHits ?? 0).toBe(0);
+  });
+
+  it("still clears the in-process count when the shared store fails the reset", async () => {
+    const breaker = createBreaker();
+    const primary = { prefix: "t:", init() {}, resetKey: async () => Promise.reject(new Error("down")) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.memory.increment("ada");
+    await expect(store.resetKey("ada")).resolves.toBeUndefined();
+    expect((await store.memory.get("ada"))?.totalHits ?? 0).toBe(0);
+    expect(breaker.isOpen()).toBe(true);
+  });
+
+  it("logs the failure once per trip, even when requests fail concurrently", async () => {
+    const logged = [];
+    const breaker = createBreaker();
+    const primary = { prefix: "t:", init() {}, increment: async () => Promise.reject(new Error("down")) };
+    const store = new FallbackStore(primary, breaker, { error: (m) => logged.push(m) });
+    store.init({ windowMs: 60_000 });
+    await Promise.all([store.increment("a"), store.increment("b"), store.increment("c")]);
+    expect(logged).toHaveLength(1);
   });
 
   it("logs the failure once per trip, not once per request", async () => {

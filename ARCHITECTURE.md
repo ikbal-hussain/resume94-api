@@ -221,7 +221,9 @@ misconfiguration no route would otherwise reveal.
 **When the counter is unreachable, every limiter degrades** to counting in-process
 (`FallbackStore`): a weaker limit — per warm instance, reset on cold start — but never
 none. A breaker shared by all limiters skips Upstash for 30 s after a failure, so an
-outage does not cost every request Upstash's 2 s deadline.
+outage does not cost every request Upstash's 2 s deadline. After the cool-down exactly one
+request probes Upstash while the rest stay on memory; the probe closes the breaker or
+re-opens it. `/api/health` reports `rateLimitFallbackActive` while it is open.
 
 The AI limiters used to **fail closed** instead, answering 503 rather than run on a weak
 limit. That turned a deleted free Upstash database into an outage of every AI feature

@@ -139,6 +139,12 @@ export function buildOpenApiDocument() {
           "Whether the shared counter actually answered, not merely whether it is " +
           "configured. null when the in-process store is in use.",
       },
+      rateLimitFallbackActive: {
+        type: "boolean",
+        description:
+          "True while a recent shared-store failure has the limiters counting per instance. " +
+          "Does not by itself make the response 503.",
+      },
       rateLimitStore: {
         type: "string",
         enum: ["memory", "upstash"],

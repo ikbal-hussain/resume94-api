@@ -45,6 +45,7 @@ export function createRateLimitService(config, fetchImpl = fetch, log = console)
       provider: "memory",
       configured: false,
       store: () => undefined,
+      fallbackActive: () => false,
       ping: async () => null,
       keepAlive: async () => null,
     };
@@ -90,6 +91,9 @@ export function createRateLimitService(config, fetchImpl = fetch, log = console)
      * refuse than run on a weaker limit. The AI routes ask for that only when
      * AI_FAIL_CLOSED is set, which is the setting for a paid provider key.
      */
+    /** Whether a recent failure has the stores counting in memory (breaker not closed). */
+    fallbackActive: () => breaker.isOpen(),
+
     store: (prefix, { degrade = true } = {}) => {
       const upstash = new UpstashStore(command, prefix);
       return degrade ? new FallbackStore(upstash, breaker, log) : upstash;
