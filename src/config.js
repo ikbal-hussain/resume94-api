@@ -33,6 +33,14 @@ const schema = z.object({
   // work and the tests, wrong in production. /api/health reports which one is live.
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  // What the AI limiters do when Upstash cannot answer. Unset (false), they keep counting
+  // in-process, like every other limiter: on a free provider tier there is no bill to
+  // protect, and refusing turned a deleted Redis database into an AI outage. Set it to
+  // "true" with a paid key, where an unmetered minute costs money and refusing is cheaper.
+  AI_FAIL_CLOSED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Bearer secret Vercel Cron sends with the weekly keep-alive. Unset means the route
+  // answers 404, so the job is off by default and inert on any other host.
+  CRON_SECRET: z.string().min(16, "CRON_SECRET must be at least 16 characters").optional(),
   // Basic-auth credentials for /api/docs in production. Unset means the docs are
   // not served there at all.
   DOCS_USER: z.string().optional(),

@@ -218,9 +218,23 @@ Lua script so the INCR and its TTL cannot come apart. `/api/health` reports whic
 is live and the smoke test fails if production is on `"memory"`, because that is a
 misconfiguration no route would otherwise reveal.
 
-The AI limiters **fail closed**: if the counter is unreachable they answer 503 rather
-than let unmetered calls through, since these are the routes that pay per call. Auth
-and resumes fail open — there an outage would only stop someone using their own account.
+**When the counter is unreachable, every limiter degrades** to counting in-process
+(`FallbackStore`): a weaker limit — per warm instance, reset on cold start — but never
+none. A breaker shared by all limiters skips Upstash for 30 s after a failure, so an
+outage does not cost every request Upstash's 2 s deadline.
+
+The AI limiters used to **fail closed** instead, answering 503 rather than run on a weak
+limit. That turned a deleted free Upstash database into an outage of every AI feature
+(November 2026), on a free provider tier where there was no bill to protect.
+`AI_FAIL_CLOSED=true` restores it, and is the right setting for a paid key.
+
+**Keeping the free database alive.** Upstash deletes a free database after 14 days
+without a command. `/api/health`'s probe writes a key and reads it back (in one Lua
+call, cached 30 s per instance), so the uptime monitor that checks health every five
+minutes keeps the database alive as a side effect — whatever monitoring tool or host is
+used. A weekly Vercel Cron (`GET /api/cron/keepalive`, Mondays 08:30 IST, bearer
+`CRON_SECRET`) is the fallback for when monitoring is paused; it writes a key of its own
+and never touches a counter.
 
 **The remaining hole:** a per-minute limit bounds burst, not total spend. An absolute
 per-account quota is still tracked separately.

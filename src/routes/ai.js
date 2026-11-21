@@ -4,14 +4,25 @@ import { validateBody } from "../middleware/errors.js";
 import { failClosed } from "../middleware/rateLimit.js";
 import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "../schemas.js";
 
-// Every route in this router pays a provider per call, so both limiters here fail
-// closed: if the shared counter cannot be reached, AI features answer 503 rather than
-// run unmetered. The routers that only serve a user their own documents make the
-// opposite trade, because there a counter outage costs availability, not money.
+// What happens when the shared counter cannot be reached is a setting, because the right
+// answer depends on whether the provider key costs money.
+//
+// By default these limiters degrade like every other one: the store falls back to
+// counting in this process (see services/rateLimit/fallback.js), so AI keeps working on a
+// weaker, per-instance limit. On a free provider tier that is the right trade — there is
+// no bill to protect, and failing closed turned a deleted free Redis database into an
+// outage of every AI feature for every user.
+//
+// AI_FAIL_CLOSED=true restores the strict behaviour for a paid key: the stores stop
+// degrading, their errors reach the limiter, and `failClosed` answers 503 rather than let
+// a call through on a limit that is not the real one. The wrapper and
+// `passOnStoreError: false` stay in place either way; with a degrading store they simply
+// never see an error.
 const COUNTER_UNREACHABLE = "AI is briefly unavailable — the usage limiter cannot be reached";
 
-export function aiRouter({ ai, requireAuth, rateLimits, testing, log = console }) {
+export function aiRouter({ config, ai, requireAuth, rateLimits, testing, log = console }) {
   const r = Router();
+  const degrade = !config.AI_FAIL_CLOSED;
   r.use(requireAuth);
   // Per-user (not per-IP) limit: AI calls cost money.
   r.use(
@@ -20,7 +31,7 @@ export function aiRouter({ ai, requireAuth, rateLimits, testing, log = console }
         windowMs: 60 * 1000,
         limit: 10,
         keyGenerator: (req) => `user:${req.user.id}`,
-        store: rateLimits.store("ai:calls:"),
+        store: rateLimits.store("ai:calls:", { degrade }),
         passOnStoreError: false,
         standardHeaders: true,
         legacyHeaders: false,
@@ -50,7 +61,7 @@ export function aiRouter({ ai, requireAuth, rateLimits, testing, log = console }
       windowMs: 10 * 60 * 1000,
       limit: 5,
       keyGenerator: (req) => `import:${req.user.id}`,
-      store: rateLimits.store("ai:import:"),
+      store: rateLimits.store("ai:import:", { degrade }),
       passOnStoreError: false,
       standardHeaders: true,
       legacyHeaders: false,

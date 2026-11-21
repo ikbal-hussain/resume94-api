@@ -17,7 +17,7 @@ The frontend is a separate repository and a separate deployment.
 
 ```bash
 npm run dev      # node --watch on :4100, reads .env if present
-npm test         # vitest run — 126 tests, real Mongo in memory, no mocks of the DB
+npm test         # vitest run — 145 tests, real Mongo in memory, no mocks of the DB
 npm run lint     # eslint
 npm run smoke    # scripts/smoke.mjs against the live deployment (not localhost)
 ```
@@ -79,14 +79,23 @@ failure. Match that. A comment restating the line below it is noise; delete it.
   limit becomes the configured one times however many instances are warm and resets on
   every cold start. `/api/health` reports `rateLimitStore` and the smoke test fails if
   production is on `"memory"`.
-- **A limiter chooses what a counter outage means.** The AI routes pass
-  `passOnStoreError: false` and are wrapped in `failClosed` — an unreachable counter
-  answers 503, because those routes pay a provider per call and unmetered is worse than
-  unavailable. Auth and resumes pass `passOnStoreError: true`: there an outage would
-  only stop someone using their own account. Keep a new limiter on the side its route
-  belongs to, and note that `failClosed` must read `next`'s argument — a wrapper that
-  ignores it silently turns fail-closed back into fail-open while the options still say
-  otherwise.
+- **When Upstash is down, limiters degrade; they do not fail.** `rateLimits.store(prefix)`
+  returns a `FallbackStore` (`src/services/rateLimit/fallback.js`): it counts in Upstash
+  and, if Upstash cannot answer, in this process — a weaker, per-instance limit, but a
+  limit. A shared breaker skips Upstash for 30 s after a failure, so an Upstash that hangs
+  does not add its 2 s deadline to every request. This replaced failing closed on the AI
+  routes after Upstash deleted the idle free database (November 2026) and every AI
+  feature answered 503 for every user. `AI_FAIL_CLOSED=true` brings the old behaviour back
+  for a paid provider key: the AI routes then ask for `store(prefix, { degrade: false })`
+  and `failClosed` answers 503. Note that `failClosed` must read `next`'s argument — a
+  wrapper that ignores it silently turns fail-closed back into fail-open while the
+  options still say otherwise.
+- **Upstash deletes a free database after 14 days without a command** (the console says
+  14; the FAQ says 30 — plan for 14). Two things keep it alive: the uptime monitor on
+  `/api/health`, whose probe *writes* a key every check, and a weekly Vercel Cron
+  (`vercel.json` → `GET /api/cron/keepalive`, Mondays 08:30 IST), which is the fallback.
+  The cron is off unless `CRON_SECRET` is set. Do not replace the probe's write with a
+  PING: whether Upstash counts a PING as activity is undocumented.
 - **An IP-keyed limit is not a per-person limit, and now it actually binds.** The auth
   limiters key on IP, and an office, a campus or an Indian mobile carrier behind CGNAT
   is thousands of people on one address. While the counters were per instance this
@@ -124,7 +133,9 @@ against production. The smoke test waits for `/api/health` to report the pushed 
 before it asserts anything, so it cannot pass against the build it is replacing.
 
 If you add a dependency the deployment cannot start without, add a check for it to
-`/api/health` and a corresponding assertion to the smoke test. A `MAIL_PROVIDER` left
+`/api/health` and a corresponding assertion to the smoke test. Health answers **503**
+when MongoDB or a configured Redis fails — the status code is what the uptime monitor
+reads — so a new hard dependency belongs in its `healthy` verdict too. A `MAIL_PROVIDER` left
 at `"console"` in production is invisible from every other endpoint until a user
 requests a password reset — that is the class of failure the health payload exists to
 catch.

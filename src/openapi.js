@@ -116,6 +116,39 @@ const notFound = error("No such resume for this account");
 const validation = error("Request body failed validation");
 
 export function buildOpenApiDocument() {
+  // One payload for both answers: a 503 carries the same body, naming what failed.
+  const healthPayload = json({
+    type: "object",
+    properties: {
+      status: { type: "string", enum: ["ok", "degraded"], example: "ok" },
+      databaseReachable: { type: "boolean" },
+      commit: {
+        type: "string",
+        nullable: true,
+        description: "Git SHA of the running deployment, or null outside Vercel",
+      },
+      aiConfigured: { type: "boolean" },
+      aiProvider: { type: "string", enum: ["gemini", "groq"] },
+      mailConfigured: { type: "boolean" },
+      mailProvider: { type: "string", enum: ["console", "resend"] },
+      googleConfigured: { type: "boolean" },
+      rateLimitStoreReachable: {
+        type: "boolean",
+        nullable: true,
+        description:
+          "Whether the shared counter actually answered, not merely whether it is " +
+          "configured. null when the in-process store is in use.",
+      },
+      rateLimitStore: {
+        type: "string",
+        enum: ["memory", "upstash"],
+        description:
+          '"memory" counts per serverless instance, so every limit is multiplied by the ' +
+          "number of warm instances and resets on each cold start. The smoke test fails on it.",
+      },
+    },
+  });
+
   return {
     openapi: "3.0.3",
     info: {
@@ -167,42 +200,47 @@ export function buildOpenApiDocument() {
           tags: ["Service"],
           summary: "Liveness and configuration check",
           description:
-            "Pings MongoDB and reports which build is answering and whether the AI and " +
-            "mail transports are configured. Used by the post-deploy smoke test.",
+            "Pings MongoDB, writes and reads back a key in the rate-limit store, and reports " +
+            "which build is answering and whether the AI and mail transports are configured. " +
+            "Answers 503 with the same body when MongoDB or a configured store does not answer, " +
+            "so an uptime monitor can judge it by status code alone. Used by the post-deploy " +
+            "smoke test and the uptime monitor.",
           responses: {
             200: {
               description: "Service is healthy",
+              ...healthPayload,
+            },
+            503: {
+              description: "A dependency did not answer: MongoDB, or a configured rate-limit store",
+              ...healthPayload,
+            },
+          },
+        },
+      },
+
+      "/cron/keepalive": {
+        get: {
+          tags: ["Service"],
+          summary: "Weekly keep-alive write to the rate-limit store (Vercel Cron)",
+          description:
+            "Writes one key of its own so the free Upstash database is never idle long enough " +
+            "to be deleted. A fallback to the uptime monitor on /health, which writes every few " +
+            "minutes. Requires `Authorization: Bearer <CRON_SECRET>`; Vercel Cron sends it.",
+          responses: {
+            200: {
+              description: "Written, or skipped because no shared store is configured",
               ...json({
                 type: "object",
                 properties: {
-                  status: { type: "string", example: "ok" },
-                  commit: {
-                    type: "string",
-                    nullable: true,
-                    description: "Git SHA of the running deployment, or null outside Vercel",
-                  },
-                  aiConfigured: { type: "boolean" },
-                  aiProvider: { type: "string", enum: ["gemini", "groq"] },
-                  mailConfigured: { type: "boolean" },
-                  mailProvider: { type: "string", enum: ["console", "resend"] },
-                  googleConfigured: { type: "boolean" },
-                  rateLimitStoreReachable: {
-                    type: "boolean",
-                    nullable: true,
-                    description:
-                      "Whether the shared counter actually answered, not merely whether it is " +
-                      "configured. null when the in-process store is in use.",
-                  },
-                  rateLimitStore: {
-                    type: "string",
-                    enum: ["memory", "upstash"],
-                    description:
-                      '"memory" counts per serverless instance, so every limit is multiplied by the ' +
-                      "number of warm instances and resets on each cold start. The smoke test fails on it.",
-                  },
+                  kept: { type: "boolean" },
+                  at: { type: "string", format: "date-time" },
+                  reason: { type: "string" },
                 },
               }),
             },
+            401: error("Missing or wrong bearer token"),
+            404: error("CRON_SECRET is not set, so the job is disabled"),
+            503: error("The write did not reach the shared store"),
           },
         },
       },

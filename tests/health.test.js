@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
-import { makeApp, startMongo, stopMongo } from "./helpers.js";
+import { makeApp, startMongo, stopMongo, getClient } from "./helpers.js";
 import { createMailService } from "../src/services/mail/index.js";
 import { loadConfig } from "../src/config.js";
 
@@ -11,7 +11,26 @@ describe("health", () => {
   it("reports ok once the database answers", async () => {
     const res = await request(await makeApp()).get("/api/health");
     expect(res.status).toBe(200);
-    expect(res.body.status).toBe("ok");
+    expect(res.body).toMatchObject({ status: "ok", databaseReachable: true });
+  });
+
+  // It used to let the ping throw, which reached the error handler as a 500 INTERNAL —
+  // indistinguishable from a bug in the route, and with no body naming the cause.
+  it("answers 503 and names the database when MongoDB does not answer", async () => {
+    const real = getClient().db("health_broken");
+    const broken = Object.create(real);
+    broken.command = async () => {
+      throw new Error("connection refused");
+    };
+    const res = await request(await makeApp({}, { db: broken })).get("/api/health");
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ status: "degraded", databaseReachable: false });
+  });
+
+  it("does not treat an unconfigured rate-limit store as a failure", async () => {
+    // The normal local setup. Production on it is the smoke test's job, not the monitor's.
+    const res = await request(await makeApp()).get("/api/health");
+    expect([res.status, res.body.rateLimitStoreReachable]).toEqual([200, null]);
   });
 
   it("names the build that is answering", async () => {

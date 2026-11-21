@@ -13,5 +13,6 @@
       }
     }
   ],
-  "routes": [{ "src": "/(.*)", "dest": "/api/index.js" }]
+  "routes": [{ "src": "/(.*)", "dest": "/api/index.js" }],
+  "crons": [{ "path": "/api/cron/keepalive", "schedule": "0 3 * * 1" }]
 }
