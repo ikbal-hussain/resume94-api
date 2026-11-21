@@ -33,6 +33,35 @@ Every entry below corresponds to work that actually reached `main`.
 - `/api/health` reports `rateLimitFallbackActive` while limiters are counting in-process.
 
 ### Added
+- **A daily AI allowance per account, and a daily token budget for the app.** Each account
+  gets `AI_DAILY_CREDITS_PER_USER` credits a day (default 30): a summary or a bullet costs
+  1, an import 5. Past it, AI routes answer 429 `AI_QUOTA_EXCEEDED` with `Retry-After`.
+  The app stops at `AI_DAILY_TOKENS_GLOBAL` tokens a day (default 180,000, under Groq's
+  free 200,000), counted from what the provider reports each call used; past it, 503
+  `AI_BUDGET_EXHAUSTED` for everyone. Resets at midnight UTC (05:30 IST).
+  - Credits and an estimate of the call's tokens (summary 1,500, improve 1,000, import
+    5,000) are reserved atomically before the call, so simultaneous calls cannot overrun
+    the budget together, and settled against the provider's reported usage before the
+    response is sent. A refund or settlement goes to the store and day the charge was
+    taken on.
+  - Credits are refunded only when no reply was produced (not configured, provider HTTP
+    error, timeout). An unusable reply (malformed JSON, a resume that fails validation)
+    keeps its charge, so failing on purpose cannot buy unlimited calls. A timeout counts
+    the prompt's tokens as spent; a provider HTTP error counts none.
+  - A provider 429 reaches users as "AI is busy right now. Please try again in a minute."
+    (`AI_RATE_LIMITED`, with the provider's `Retry-After`), or — when it names a daily
+    limit — as `AI_BUDGET_EXHAUSTED`, which also closes the app's budget for the rest of
+    the UTC day. Provider wording is never shown.
+  - `GET /api/ai/usage` returns `{ used, limit, remaining, resetsAt, available }`, and
+    every AI answer now carries `usage` alongside `text` / `data`. It has its own
+    in-process limit of 30 reads a minute, so it cannot be used to spend Upstash's
+    command quota.
+  - Under `AI_FAIL_CLOSED` the allowance always tries Upstash rather than refusing because
+    the shared breaker was tripped by another limiter.
+  - `AI_DAILY_CREDITS_PER_USER` and `AI_DAILY_TOKENS_GLOBAL` fall back to their defaults,
+    with a warning, on an invalid value instead of stopping the API.
+  - Providers now report token usage (`usage.total_tokens` for Groq,
+    `usageMetadata.totalTokenCount` for Gemini).
 - The health probe **writes a key and reads it back** instead of sending a PING, which
   proves a counter would be stored and is certainly activity for Upstash's 14-day idle
   timer: the uptime monitor on `/api/health` now keeps the free database alive.

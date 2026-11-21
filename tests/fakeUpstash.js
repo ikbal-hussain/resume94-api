@@ -35,6 +35,43 @@ export function fakeUpstash() {
     if (command === "EVAL") {
       const [script, , key, windowMs] = args;
 
+      // The AI quota's scripts. Checked before the limiter's INCR, which they also contain.
+      const num = (k) => {
+        pttl(k);
+        return keys.get(k)?.value ?? 0;
+      };
+      const put = (k, value, seconds) => {
+        const prev = keys.get(k);
+        keys.set(k, { value, expiresAt: seconds ? Date.now() + Number(seconds) * 1000 : prev?.expiresAt ?? null });
+      };
+      if (script.includes("{ -2")) {
+        const [, , userKey, tokenKey, cost, limit, budget, ttl, estimate] = args;
+        const used = num(userKey);
+        const tokens = num(tokenKey);
+        if (tokens >= Number(budget) || tokens + Number(estimate) > Number(budget)) return [-2, used, tokens];
+        if (used + Number(cost) > Number(limit)) return [-1, used, tokens];
+        put(userKey, used + Number(cost), ttl);
+        put(tokenKey, tokens + Number(estimate), ttl);
+        return [1, used + Number(cost), tokens + Number(estimate)];
+      }
+      if (script.includes("DECRBY")) {
+        const [, , userKey, cost] = args;
+        if (pttl(userKey) === -2) return 0;
+        const left = Math.max(0, num(userKey) - Number(cost));
+        put(userKey, left);
+        return left;
+      }
+      if (script.includes("INCRBY")) {
+        const [, , tokenKey, n, ttl] = args;
+        put(tokenKey, Math.max(0, num(tokenKey) + Number(n)), ttl);
+        return num(tokenKey);
+      }
+      if (script.includes("total < tonumber(ARGV[1])")) {
+        const [, , tokenKey, budget, ttl] = args;
+        if (num(tokenKey) < Number(budget)) put(tokenKey, Number(budget), ttl);
+        return num(tokenKey);
+      }
+
       // The health probe: SET with an expiry, then GET it back.
       if (script.includes('"SET"')) {
         const [, , , value, seconds] = args;
@@ -67,6 +104,7 @@ export function fakeUpstash() {
       throw new Error("fake upstash got an unrecognised script");
     }
     if (command === "PING") return "PONG";
+    if (command === "MGET") return args.map((k) => (pttl(k) === -2 ? null : String(keys.get(k).value ?? keys.get(k).hits ?? "")));
     if (command === "SET") {
       const [key, value, , seconds] = args;
       keys.set(key, { value, expiresAt: Date.now() + Number(seconds) * 1000 });

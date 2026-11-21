@@ -44,6 +44,8 @@ export function createRateLimitService(config, fetchImpl = fetch, log = console)
     return {
       provider: "memory",
       configured: false,
+      command: null,
+      breaker: null,
       store: () => undefined,
       fallbackActive: () => false,
       ping: async () => null,
@@ -82,6 +84,10 @@ export function createRateLimitService(config, fetchImpl = fetch, log = console)
   return {
     provider: "upstash",
     configured: true,
+    // Shared with the AI quota (services/aiQuota.js), which keeps its counters in the
+    // same database and must agree with the limiters about when Upstash is down.
+    command,
+    breaker,
     /**
      * A store for one limiter's counters.
      *

@@ -191,6 +191,43 @@ describe("ai service — provider selection", () => {
   });
 });
 
+describe("token accounting", () => {
+  const cfg = (o = {}) => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(20), ...o });
+  const args = { role: "a", experience: "b", keySkills: "c" };
+
+  it("reports what Groq says the call used, reasoning included", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }], usage: { total_tokens: 812 } }) });
+    const seen = [];
+    await createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl).summary(args, { onTokens: (n) => seen.push(n) });
+    expect(seen).toEqual([812]);
+  });
+
+  it("reports what Gemini says the call used", async () => {
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: "hi" }] } }], usageMetadata: { totalTokenCount: 333 } }),
+    });
+    const seen = [];
+    await createAiService(cfg({ GEMINI_API_KEY: "k" }), fetchImpl).improve({ section: "projects", content: "x" }, { onTokens: (n) => seen.push(n) });
+    expect(seen).toEqual([333]);
+  });
+
+  it("estimates when the provider does not say, so the budget never stops moving", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "hi" } }] }) });
+    const seen = [];
+    await createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl).summary(args, { onTokens: (n) => seen.push(n) });
+    expect(seen[0]).toBeGreaterThan(0);
+  });
+
+  it("counts the tokens even when the reply is unusable", async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: "no json here" } }], usage: { total_tokens: 4000 } }) });
+    const seen = [];
+    const ai = createAiService(cfg({ AI_PROVIDER: "groq", GROQ_API_KEY: "k" }), fetchImpl);
+    await expect(ai.parseResume({ text: "x".repeat(300) }, { onTokens: (n) => seen.push(n) })).rejects.toMatchObject({ status: 502 });
+    expect(seen).toEqual([4000]);
+  });
+});
+
 describe("gemini provider", () => {
   const cfg = (o = {}) => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(20), ...o });
 
@@ -259,5 +296,81 @@ describe("groq provider", () => {
     await expect(ai(401).summary(args)).rejects.toMatchObject({ status: 502, code: "AI_AUTH" });
     await expect(ai(429).summary(args)).rejects.toMatchObject({ status: 429, code: "AI_RATE_LIMITED" });
     await expect(ai(500).summary(args)).rejects.toMatchObject({ status: 502, code: "AI_UPSTREAM" });
+  });
+});
+
+describe("provider limits and failures, in words a user can act on", () => {
+  const cfg = (o = {}) => loadConfig({ NODE_ENV: "test", JWT_SECRET: "x".repeat(20), AI_PROVIDER: "groq", GROQ_API_KEY: "k", ...o });
+  const answering = (status, body, headers = {}) => async () => ({
+    ok: false,
+    status,
+    text: async () => body,
+    headers: { get: (h) => headers[h.toLowerCase()] ?? null },
+  });
+  const failWith = async (fetchImpl) => {
+    const tokens = [];
+    const err = await createAiService(cfg(), fetchImpl)
+      .summary({ role: "Dev", experience: "2 years", keySkills: "Go" }, { onTokens: (n) => tokens.push(n) })
+      .catch((e) => e);
+    return { err, tokens };
+  };
+
+  it("turns a per-minute 429 into 'busy, try again' and passes the provider's Retry-After on", async () => {
+    const body = '{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` on tokens per minute (TPM): Limit 8000"}}';
+    const { err } = await failWith(answering(429, body, { "retry-after": "7" }));
+    expect([err.status, err.code, err.message]).toEqual([429, "AI_RATE_LIMITED", "AI is busy right now. Please try again in a minute."]);
+    expect(err.headers).toEqual({ "Retry-After": "7" });
+    expect(err.message).not.toMatch(/groq|TPM|limit/i);
+  });
+
+  it("treats a daily-limit 429 as the app's capacity being spent for today", async () => {
+    const body = '{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` on tokens per day (TPD): Limit 200000"}}';
+    const { err } = await failWith(answering(429, body));
+    expect([err.status, err.code, err.dailyLimit]).toEqual([503, "AI_BUDGET_EXHAUSTED", true]);
+  });
+
+  it("recognises Gemini's per-day quota names too", async () => {
+    const { err } = await failWith(answering(429, "Quota exceeded for metric GenerateRequestsPerDayPerProjectPerModel-FreeTier"));
+    expect(err.code).toBe("AI_BUDGET_EXHAUSTED");
+  });
+
+  // No reply was produced: refundable, and nothing was generated to count.
+  it("marks a provider HTTP error refundable and counts no tokens for it", async () => {
+    const { err, tokens } = await failWith(answering(500, "boom"));
+    expect([err.code, err.refundable]).toEqual(["AI_UPSTREAM", true]);
+    expect(tokens).toEqual([]);
+  });
+
+  // The provider may have worked on it for the whole deadline.
+  it("marks a timeout refundable but counts the prompt's tokens as spent", async () => {
+    const { err, tokens } = await failWith(async () => {
+      throw new DOMException("timed out", "TimeoutError");
+    });
+    expect([err.code, err.refundable]).toEqual(["AI_TIMEOUT", true]);
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toBeGreaterThan(10);
+  });
+
+  it("keeps the charge for a reply that arrived but could not be read", async () => {
+    const { err, tokens } = await failWith(async () => ({ ok: true, status: 200, json: async () => Promise.reject(new SyntaxError("x")) }));
+    expect(err.refundable).toBeFalsy();
+    expect(tokens).toHaveLength(1);
+  });
+
+  it("refunds a call to an unconfigured provider", async () => {
+    const err = await createAiService(cfg({ GROQ_API_KEY: "" }), fetch).summary({ role: "a", experience: "b", keySkills: "c" }).catch((e) => e);
+    expect([err.code, err.refundable]).toEqual(["AI_UNAVAILABLE", true]);
+  });
+});
+
+describe("numeric AI settings", () => {
+  it("fall back to the default with a warning on a value that is not a positive whole number", () => {
+    const warnings = [];
+    const cfg = loadConfig(
+      { NODE_ENV: "test", JWT_SECRET: "x".repeat(20), AI_DAILY_CREDITS_PER_USER: "thirty", AI_DAILY_TOKENS_GLOBAL: "150_000" },
+      { warn: (m) => warnings.push(m) }
+    );
+    expect([cfg.AI_DAILY_CREDITS_PER_USER, cfg.AI_DAILY_TOKENS_GLOBAL]).toEqual([30, 150_000]);
+    expect(warnings.join()).toMatch(/AI_DAILY_CREDITS_PER_USER="thirty"/);
   });
 });

@@ -36,6 +36,8 @@ export const groq = {
     } catch {
       throw new HttpError(502, "The groq response could not be read", "AI_UPSTREAM");
     }
-    return payload?.choices?.[0]?.message?.content?.trim();
+    // total_tokens includes the reasoning tokens gpt-oss spends before answering, which
+    // count against Groq's per-minute and per-day limits like any other.
+    return { text: payload?.choices?.[0]?.message?.content?.trim(), tokens: payload?.usage?.total_tokens ?? null };
   },
 };
