@@ -2,7 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
-import { COOKIE_NAME, cookieOptions, signToken } from "../middleware/auth.js";
+import { COOKIE_NAME, cookieOptions, readSession, signToken } from "../middleware/auth.js";
 import {
   registerSchema,
   loginSchema,
@@ -268,6 +268,17 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   });
 
   r.get("/me", requireAuth, (req, res) => res.json({ user: req.user }));
+
+  // The page-load "is anyone signed in?" check. Unlike /me it answers 200 when nobody
+  // is: on the landing page a signed-out visitor is the normal case, and /me's 401 made
+  // every anonymous visit log a console error (Lighthouse "errors-in-console", RESUME-34).
+  //
+  // It never clears a stale cookie, though that would save a lookup: this check runs on
+  // page load, concurrently with a sign-in the user may already be submitting, and a late
+  // clearing Set-Cookie would delete the fresh token that sign-in just set.
+  r.get("/session", async (req, res) => {
+    res.set("Cache-Control", "no-store").json({ user: await readSession(config, users, req) });
+  });
 
   r.patch("/me", requireAuth, validateBody(updateProfileSchema), async (req, res) => {
     res.json({ user: await users.updateName(req.user.id, req.body.name) });

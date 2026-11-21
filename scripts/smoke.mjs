@@ -156,6 +156,15 @@ async function run() {
     return "401";
   });
 
+  await check("auth: signed-out session check answers 200", async () => {
+    // The frontend calls this on every page load. A 401 or 500 here brings back a console
+    // error on every anonymous visit (RESUME-34), which is what this route exists to stop.
+    const { status, text } = await get("/api/auth/session");
+    expect(status === 200, `expected 200, got ${status}`);
+    expect(JSON.parse(text).user === null, `expected user null, got ${text.slice(0, 80)}`);
+    return "200, user null";
+  });
+
   await check("reset: token probe answers", async () => {
     // The token is a PATH segment, not a query parameter. Sending it as a query put the
     // literal string "validate" in the token position, which still answered {valid:false}

@@ -33,6 +33,11 @@ Every entry below corresponds to work that actually reached `main`.
 - `/api/health` reports `rateLimitFallbackActive` while limiters are counting in-process.
 
 ### Added
+- **`GET /api/auth/session`**: the page-load "is anyone signed in?" check. Always 200,
+  with `user` null when there is no valid session; a database error is still a 5xx. It
+  never clears a stale cookie, since that could race a sign-in and delete its new token. `/auth/me` keeps its 401 for routes that need a session. The
+  frontend's 401 from `/me` on every anonymous visit was logged as a browser console
+  error and cost Lighthouse points (RESUME-34).
 - **A daily AI allowance per account, and a daily token budget for the app.** Each account
   gets `AI_DAILY_CREDITS_PER_USER` credits a day (default 30): a summary or a bullet costs
   1, an import 5. Past it, AI routes answer 429 `AI_QUOTA_EXCEEDED` with `Retry-After`.
