@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import { validateBody } from "../middleware/errors.js";
 import { failClosed } from "../middleware/rateLimit.js";
 import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "../schemas.js";
-import { AI_COSTS } from "../services/aiQuota.js";
+import { AI_COSTS, TOKEN_ESTIMATES } from "../services/aiQuota.js";
 
 // What happens when the shared counter cannot be reached is a setting, because the right
 // answer depends on whether the provider key costs money.
@@ -26,35 +26,53 @@ export function aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing
   const degrade = !config.AI_FAIL_CLOSED;
   r.use(requireAuth);
 
-  // Today's credits, for the meter in the AI dialogs. Registered before the per-minute
-  // limiter on purpose: it costs nothing, and the frontend reads it whenever a dialog
-  // opens — counting it would let opening dialogs lock someone out of using them.
-  r.get("/usage", async (req, res) => {
+  // Today's credits, for the meter in the AI dialogs. Registered before the AI limiter on
+  // purpose: reading the meter must never use up the allowance for making calls. It has
+  // a limiter of its own, because each read is an Upstash command and Upstash's free tier
+  // has a daily command ceiling — the same reason the health probe is cached. That one
+  // counts in this process (no store option), so guarding Upstash costs no Upstash
+  // commands; per instance is plenty to stop a script looping on it.
+  const usageLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 30,
+    keyGenerator: (req) => `usage:${req.user.id}`,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: { code: "RATE_LIMITED", message: "Too many requests, wait a minute" } },
+  });
+  r.get("/usage", usageLimiter, async (req, res) => {
     res.json(await aiQuota.usage(req.user.id));
   });
 
   /**
    * Runs one AI call against the daily allowance.
    *
-   * Credits are reserved before the provider is called, so two requests cannot both spend
-   * the last one, and refunded if the call fails for any reason: validation already ran,
-   * so a failure here is ours or the provider's, never the user's. The tokens the call
-   * used are added to the app's budget either way — an unusable reply still spent them.
-   * The response carries the usage after the charge, so the meter updates without
-   * another request.
+   * Credits and an estimate of the call's tokens are reserved before the provider is
+   * called, so simultaneous requests can neither both spend the last credit nor together
+   * overrun the app's budget. Afterwards the estimate is settled against what the
+   * provider reported, before the response is sent: on serverless, work after the
+   * response may never run, and the budget would undercount every successful call.
+   *
+   * Credits come back only when no reply was produced — not configured, the provider's
+   * HTTP error, a timeout (errors marked `refundable`). A reply that arrived but was
+   * unusable (malformed JSON, a resume that fails validation) keeps the charge: user
+   * input can cause that, and refunding it would let anyone get unlimited calls by
+   * making them fail on purpose.
    */
   const charged = (kind, call) => async (req, res) => {
-    const cost = AI_COSTS[kind];
-    const usage = await aiQuota.reserve(req.user.id, cost);
+    const { receipt } = await aiQuota.reserve(req.user.id, AI_COSTS[kind], TOKEN_ESTIMATES[kind]);
     let tokens = 0;
+    let result;
     try {
-      res.json({ ...(await call(req.body, { onTokens: (n) => (tokens += n) })), usage });
+      result = await call(req.body, { onTokens: (n) => (tokens += n) });
     } catch (err) {
-      await aiQuota.refund(req.user.id, cost);
+      if (err?.refundable) await aiQuota.refund(receipt);
+      await aiQuota.settle(receipt, tokens);
+      if (err?.dailyLimit) await aiQuota.exhaust();
       throw err;
-    } finally {
-      await aiQuota.recordTokens(tokens);
     }
+    const usage = await aiQuota.settle(receipt, tokens);
+    res.json({ ...result, usage });
   };
   // Per-user (not per-IP) limit: AI calls cost money.
   r.use(

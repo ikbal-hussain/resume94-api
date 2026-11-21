@@ -99,8 +99,13 @@ failure. Match that. A comment restating the line below it is noise; delete it.
   `AI_DAILY_CREDITS_PER_USER` credits per account (summary/improve 1, import 5) and
   `AI_DAILY_TOKENS_GLOBAL` tokens for the whole app, counted from the provider's reported
   usage. A new AI route goes through `charged(kind, call)` in `routes/ai.js` and needs a
-  cost in `AI_COSTS`; it must pass `onTokens` through to the AI service, or its tokens
-  never reach the budget. Credits are reserved before the call and refunded if it fails.
+  cost in `AI_COSTS` and a token estimate in `TOKEN_ESTIMATES`; it must pass `onTokens`
+  through to the AI service, or its tokens never reach the budget. Credits and the
+  estimate are reserved before the call and settled before the response. Credits are
+  refunded only for errors marked `refundable` (no reply was produced: not configured,
+  provider HTTP error, timeout) — never for an unusable reply, which user input can cause.
+  Provider error wording never reaches users: a provider 429 becomes "AI is busy" or, for
+  a daily limit, `AI_BUDGET_EXHAUSTED`.
 - **Upstash deletes a free database after 14 days without a command** (the console says
   14; the FAQ says 30 — plan for 14). Two things keep it alive: the uptime monitor on
   `/api/health`, whose probe *writes* a key every check, and a weekly Vercel Cron

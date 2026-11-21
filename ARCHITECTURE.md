@@ -250,16 +250,28 @@ requests and 200,000 tokens a day for the whole app on Groq's free tier.
   characters a token when it reports none. Over it: 503 `AI_BUDGET_EXHAUSTED` for
   everyone. This is also the backstop for accounts multiplied to get more credits, since
   registration has no email verification yet.
-- **Reserve, then refund.** One Lua script checks both limits and spends the credits
-  atomically, so two requests cannot both take the last one. If the call then fails, the
-  credits come back: validation has already passed, so the failure is ours or the
-  provider's. The tokens are counted either way.
+- **Reserve, settle, and refund only what produced nothing.** One Lua script checks both
+  limits, spends the credits and reserves an estimate of the call's tokens
+  (`TOKEN_ESTIMATES`) atomically, so simultaneous requests can neither both take the last
+  credit nor together overrun the budget. The estimate is settled against the provider's
+  reported usage before the response is sent (work after the response may never run on
+  serverless). `reserve` returns a receipt — keys, day, and which store took it — and the
+  settlement and any refund go there, never to the other store or day.
+- Credits come back only for errors marked `refundable`: no key, a provider HTTP error, a
+  timeout. A reply that arrived but was unusable keeps its charge, because user input can
+  cause that and refunding it made "fail on purpose" an unlimited-calls exploit.
+- **Provider limits in users' words.** A provider 429 becomes `AI_RATE_LIMITED` ("AI is busy
+  right now. Please try again in a minute.", provider `Retry-After` passed on). One that
+  names a daily limit becomes `AI_BUDGET_EXHAUSTED` and closes the app's budget for the
+  rest of the UTC day, so later calls get the clear answer up front.
 - Days are UTC; the allowance resets at 05:30 IST. Counters live in the limiters' Upstash
-  database, share their breaker, and fall back to in-process counts the same way —
-  refusing instead under `AI_FAIL_CLOSED`.
+  database, share their breaker, and fall back to in-process counts the same way (swept
+  every ten minutes). Under `AI_FAIL_CLOSED` they always try Upstash and refuse on failure,
+  ignoring a breaker another limiter may have tripped.
 - `GET /api/ai/usage` reports the allowance for the meter in the AI dialogs, and every AI
   answer carries the usage after its charge. The usage route sits before the per-minute
-  limiter, so reading it never costs a call.
+  AI limiter, so reading it never costs a call; its own in-process limit (30 a minute)
+  stops it being used to spend Upstash's command quota.
 
 ## Password reset
 

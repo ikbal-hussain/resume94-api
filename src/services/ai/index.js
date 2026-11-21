@@ -112,8 +112,30 @@ export function createAiService(config, fetchImpl = fetch) {
    * stands in, so the budget never silently stops moving.
    */
   async function generate(prompt, { onTokens, ...options } = {}) {
-    if (!apiKey) throw new HttpError(503, "AI features are not configured", "AI_UNAVAILABLE");
-    const { text, tokens } = await provider.call(prompt, { apiKey, model, ...options }, fetchImpl);
+    if (!apiKey) {
+      const err = new HttpError(503, "AI features are not configured", "AI_UNAVAILABLE");
+      err.refundable = true; // nothing was sent anywhere
+      throw err;
+    }
+    let reply;
+    try {
+      reply = await provider.call(prompt, { apiKey, model, ...options }, fetchImpl);
+    } catch (err) {
+      // What a failed call cost depends on where it failed. An HTTP error from the
+      // provider (upstreamFailure, already `refundable`) produced nothing: 0 tokens. A
+      // timeout was sent and may have been worked on for its full deadline: the prompt's
+      // size stands in, and it is refundable because the user got nothing. Anything
+      // else (a 200 whose body could not be read) means a reply arrived: count the
+      // prompt, and keep the charge.
+      if (err?.code === "AI_TIMEOUT") {
+        err.refundable = true;
+        onTokens?.(Math.ceil(prompt.length / 4));
+      } else if (!err?.refundable) {
+        onTokens?.(Math.ceil(prompt.length / 4));
+      }
+      throw err;
+    }
+    const { text, tokens } = reply;
     onTokens?.(tokens ?? Math.ceil((prompt.length + (text?.length ?? 0)) / 4));
     if (!text) throw new HttpError(502, "AI provider returned no content", "AI_UPSTREAM");
     return text;

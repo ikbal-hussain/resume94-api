@@ -124,14 +124,21 @@ export function buildOpenApiDocument() {
       limit: { type: "integer", description: "Credits per account per day (AI_DAILY_CREDITS_PER_USER)" },
       remaining: { type: "integer" },
       resetsAt: { type: "string", format: "date-time", description: "Next midnight UTC (05:30 IST)" },
-      available: { type: "boolean", description: "false once the app's daily token budget is spent" },
+      available: {
+        type: "boolean",
+        description: "false once the app's daily token budget cannot cover even the cheapest AI call",
+      },
     },
   };
   const quotaErrors = {
-    429: error("Per-minute rate limit, or today's AI credits are used up (AI_QUOTA_EXCEEDED, with Retry-After)"),
+    429: error(
+      "Per-minute rate limit; today's AI credits are used up (AI_QUOTA_EXCEEDED, with Retry-After); or the " +
+        "provider is busy (AI_RATE_LIMITED, with the provider's Retry-After when it gives one)"
+    ),
     503: error(
-      "No AI provider key is configured; the app's daily token budget is spent (AI_BUDGET_EXHAUSTED, with " +
-        "Retry-After); or, with AI_FAIL_CLOSED, the usage counter is unreachable"
+      "No AI provider key is configured; the app's daily token budget is spent, or the provider reports its " +
+        "own daily limit reached (AI_BUDGET_EXHAUSTED, with Retry-After); or, with AI_FAIL_CLOSED, the usage " +
+        "counter is unreachable"
     ),
   };
 
@@ -474,9 +481,14 @@ export function buildOpenApiDocument() {
           description:
             "A summary or a bullet costs 1 credit and an import 5; the allowance resets at midnight " +
             "UTC (05:30 IST). Not counted against the per-minute AI limit, so reading it never " +
-            "costs the user a call.",
+            "costs the user a call; limited separately to 30 reads a minute.",
           security: auth,
-          responses: { 200: { description: "Usage", ...json(aiUsage) }, 401: unauthorized },
+          responses: {
+            200: { description: "Usage", ...json(aiUsage) },
+            401: unauthorized,
+            429: error("More than 30 reads a minute"),
+            503: error("With AI_FAIL_CLOSED, the usage counter is unreachable (RATE_LIMIT_UNAVAILABLE, with Retry-After)"),
+          },
         },
       },
       "/ai/summary": {
@@ -484,7 +496,7 @@ export function buildOpenApiDocument() {
           tags: ["AI"],
           summary: "Generate a professional summary",
           description:
-            "Costs **1 credit** of the account's daily allowance, refunded if the call fails. " +
+            "Costs **1 credit** of the account's daily allowance, refunded if no reply was produced (provider error or timeout). " +
             "Also limited to 10 requests per minute per user.",
           security: auth,
           requestBody: { required: true, ...json(ref("SummaryRequest")) },
@@ -503,7 +515,7 @@ export function buildOpenApiDocument() {
           summary: "Rewrite one resume entry",
           description:
             "The submitted text is fenced in the prompt and the model is told to treat it as content, " +
-            "never as instructions, to blunt prompt injection. Costs **1 credit**, refunded if the call fails.",
+            "never as instructions, to blunt prompt injection. Costs **1 credit**, refunded if no reply was produced (provider error or timeout).",
           security: auth,
           requestBody: { required: true, ...json(ref("ImproveRequest")) },
           responses: {
@@ -528,7 +540,7 @@ export function buildOpenApiDocument() {
             "The model is told to copy and never invent, and runs at temperature 0. Its answer " +
             "is parsed permissively: a field it returns in the wrong shape is coerced or " +
             "dropped rather than failing the whole import.\n\n" +
-            "Costs **5 credits** (refunded if the call fails) and is limited to **5 requests per " +
+            "Costs **5 credits** (refunded if no reply was produced (provider error or timeout)) and is limited to **5 requests per " +
             "10 minutes per user** — a much larger prompt than the other AI endpoints, and an " +
             "action people take rarely.",
           security: auth,

@@ -6,22 +6,35 @@ import { HttpError } from "../middleware/errors.js";
  */
 export const AI_COSTS = { summary: 1, improve: 1, import: 5 };
 
+/**
+ * What each AI route is expected to cost in tokens, reserved from the app's daily budget
+ * before the call and settled against what the provider reports afterwards. Reserving up
+ * front is what keeps simultaneous calls from all passing a "budget not yet spent" check
+ * and overshooting it together. Generous on purpose: an over-estimate only holds tokens
+ * for the seconds a call takes; an under-estimate lets the budget be overrun.
+ */
+export const TOKEN_ESTIMATES = { summary: 1500, improve: 1000, import: 5000 };
+const SMALLEST_ESTIMATE = Math.min(...Object.values(TOKEN_ESTIMATES));
+
 const DAY_SECONDS = 24 * 60 * 60;
 // Two days, so a key outlives its own day even if the clock and Redis disagree slightly.
 const TTL_SECONDS = 2 * DAY_SECONDS;
 
 /**
- * Check both limits and spend the credits, in one step. Returns [status, used, tokens]:
- * status 1 = charged, -1 = the account is out of credits, -2 = the app is out of tokens.
- * Atomic, so two simultaneous requests cannot both squeeze through on the last credit.
+ * Check both limits, spend the credits and reserve the estimated tokens, in one step.
+ * Returns [status, used, tokens]: 1 = charged, -1 = the account is out of credits,
+ * -2 = the app's budget cannot cover this call. Atomic, so two simultaneous requests
+ * cannot both squeeze through on the last credit or the last tokens.
  */
 const RESERVE = `
 local used = tonumber(redis.call("GET", KEYS[1]) or "0")
 local tokens = tonumber(redis.call("GET", KEYS[2]) or "0")
-if tokens >= tonumber(ARGV[3]) then return { -2, used, tokens } end
+if tokens >= tonumber(ARGV[3]) or tokens + tonumber(ARGV[5]) > tonumber(ARGV[3]) then return { -2, used, tokens } end
 if used + tonumber(ARGV[1]) > tonumber(ARGV[2]) then return { -1, used, tokens } end
 used = redis.call("INCRBY", KEYS[1], ARGV[1])
 redis.call("EXPIRE", KEYS[1], ARGV[4])
+tokens = redis.call("INCRBY", KEYS[2], ARGV[5])
+redis.call("EXPIRE", KEYS[2], ARGV[4])
 return { 1, used, tokens }
 `;
 
@@ -33,29 +46,48 @@ if left < 0 then redis.call("SET", KEYS[1], 0, "KEEPTTL") left = 0 end
 return left
 `;
 
+/** Adds a signed amount to the day's tokens, never below zero. Returns the new total. */
 const ADD_TOKENS = `
 local total = redis.call("INCRBY", KEYS[1], ARGV[1])
+if total < 0 then redis.call("SET", KEYS[1], 0) total = 0 end
 redis.call("EXPIRE", KEYS[1], ARGV[2])
+return total
+`;
+
+/** Marks the day's budget spent (the provider said its own daily limit is reached). */
+const EXHAUST = `
+local total = tonumber(redis.call("GET", KEYS[1]) or "0")
+if total < tonumber(ARGV[1]) then redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2]) total = tonumber(ARGV[1]) end
 return total
 `;
 
 function redisCounters(command) {
   return {
-    reserve: (userKey, tokenKey, cost, limit, budget) =>
-      command(["EVAL", RESERVE, "2", userKey, tokenKey, String(cost), String(limit), String(budget), String(TTL_SECONDS)]),
+    reserve: (userKey, tokenKey, cost, limit, budget, estimate) =>
+      command(["EVAL", RESERVE, "2", userKey, tokenKey, String(cost), String(limit), String(budget), String(TTL_SECONDS), String(estimate)]),
     refund: (userKey, cost) => command(["EVAL", REFUND, "1", userKey, String(cost)]),
     addTokens: (tokenKey, n) => command(["EVAL", ADD_TOKENS, "1", tokenKey, String(n), String(TTL_SECONDS)]),
+    exhaust: (tokenKey, budget) => command(["EVAL", EXHAUST, "1", tokenKey, String(budget), String(TTL_SECONDS)]),
     read: async (userKey, tokenKey) => (await command(["MGET", userKey, tokenKey])).map((v) => Number(v ?? 0)),
   };
 }
 
+const SWEEP_EVERY_MS = 10 * 60 * 1000;
+
 /**
- * The same four operations in this process: for local work and tests, and as the fallback
- * when Upstash cannot answer. Keys carry the day in their name, so a stale one is simply
- * never read again; entries are dropped as they expire.
+ * The same operations in this process: for local work and tests, and as the fallback
+ * when Upstash cannot answer. Keys carry the day in their name, so yesterday's are never
+ * read again; a sweep every ten minutes drops expired entries, or a long-lived process
+ * would keep one per active user per day forever.
  */
 function memoryCounters(now) {
   const values = new Map();
+  let nextSweep = 0;
+  const sweep = (at) => {
+    if (at < nextSweep) return;
+    nextSweep = at + SWEEP_EVERY_MS;
+    for (const [key, entry] of values) if (entry.expiresAt <= at) values.delete(key);
+  };
   const get = (key) => {
     const entry = values.get(key);
     if (!entry) return 0;
@@ -65,21 +97,34 @@ function memoryCounters(now) {
     }
     return entry.value;
   };
-  const set = (key, value) => values.set(key, { value, expiresAt: now().getTime() + TTL_SECONDS * 1000 });
+  const set = (key, value) => {
+    const at = now().getTime();
+    sweep(at);
+    values.set(key, { value, expiresAt: at + TTL_SECONDS * 1000 });
+  };
   return {
-    async reserve(userKey, tokenKey, cost, limit, budget) {
+    size: () => values.size,
+    async reserve(userKey, tokenKey, cost, limit, budget, estimate) {
       const used = get(userKey);
       const tokens = get(tokenKey);
-      if (tokens >= budget) return [-2, used, tokens];
+      if (tokens >= budget || tokens + estimate > budget) return [-2, used, tokens];
       if (used + cost > limit) return [-1, used, tokens];
       set(userKey, used + cost);
-      return [1, used + cost, tokens];
+      set(tokenKey, tokens + estimate);
+      return [1, used + cost, tokens + estimate];
     },
     async refund(userKey, cost) {
       if (values.has(userKey)) set(userKey, Math.max(0, get(userKey) - cost));
     },
     async addTokens(tokenKey, n) {
-      set(tokenKey, get(tokenKey) + n);
+      const total = Math.max(0, get(tokenKey) + n);
+      set(tokenKey, total);
+      return total;
+    },
+    async exhaust(tokenKey, budget) {
+      const total = Math.max(get(tokenKey), budget);
+      set(tokenKey, total);
+      return total;
     },
     async read(userKey, tokenKey) {
       return [get(userKey), get(tokenKey)];
@@ -103,8 +148,9 @@ function memoryCounters(now) {
  *   Over it: 503 `AI_BUDGET_EXHAUSTED` for everyone — the worst case is "AI is off until
  *   tomorrow", never a bill or a provider ban.
  *
- * Days are UTC (they reset at 05:30 IST). Credits are reserved before the call and refunded
- * if the call fails, so nobody pays for an outage that was not theirs.
+ * Days are UTC (they reset at 05:30 IST). Credits and an estimate of the tokens are
+ * reserved before the call and settled after it (see routes/ai.js `charged` for which
+ * failures are refunded).
  *
  * When Upstash cannot answer, the counters fall back to this process, like the limiters
  * do — unless AI_FAIL_CLOSED is set, in which case the request is refused instead.
@@ -121,7 +167,7 @@ export function createAiQuota(config, { command = null, breaker = null, log = co
     next.setUTCHours(24, 0, 0, 0);
     return next;
   };
-  const keys = (userId) => [`ai:quota:user:${userId}:${day()}`, `ai:quota:tokens:${day()}`];
+  const keys = (userId, d = day()) => [`ai:quota:user:${userId}:${d}`, `ai:quota:tokens:${d}`];
   const retryAfter = () => String(Math.max(1, Math.ceil((resetsAt() - now()) / 1000)));
 
   const unreachable = () => {
@@ -130,21 +176,50 @@ export function createAiQuota(config, { command = null, breaker = null, log = co
     return err;
   };
 
-  // Runs an operation on Redis, or in this process when there is no Redis, or it just
-  // failed, or the shared breaker says it is still down. With AI_FAIL_CLOSED the last two
-  // refuse instead: a paid key should not run on a per-instance count.
+  const failed = (err) => {
+    // trip() returns true only on a transition, so an outage logs once, not per request.
+    if (breaker?.trip?.() ?? true) {
+      log.error?.("[ai-quota] shared store failed; counting in this process until it answers again", err);
+    }
+  };
+
+  /**
+   * Runs an operation on Redis, or in this process, and says which one took it.
+   *
+   * By default it follows the shared breaker, like the limiters: skip Redis while it is
+   * known to be down. Under AI_FAIL_CLOSED it always tries Redis and refuses on failure —
+   * the breaker may have been tripped by a login limiter's single timeout, and a paid key
+   * should neither run on a per-instance count nor be refused because of somebody else's
+   * failure while Redis is in fact answering.
+   */
   async function run(op, ...args) {
-    if (!redis) return memory[op](...args);
-    if (!breaker?.isOpen()) {
+    if (!redis) return { backend: "memory", value: await memory[op](...args) };
+    if (config.AI_FAIL_CLOSED || !breaker || breaker.tryAcquire()) {
       try {
-        return await redis[op](...args);
+        const value = await redis[op](...args);
+        breaker?.succeed?.();
+        return { backend: "redis", value };
       } catch (err) {
-        breaker?.trip();
-        log.error?.("[ai-quota] shared store failed; counting in this process until it answers again", err);
+        failed(err);
+        if (config.AI_FAIL_CLOSED) throw unreachable();
       }
     }
-    if (config.AI_FAIL_CLOSED) throw unreachable();
-    return memory[op](...args);
+    return { backend: "memory", value: await memory[op](...args) };
+  }
+
+  /**
+   * Runs an operation on the backend a receipt was charged on, never the other one. A
+   * refund or settlement sent to the other store would change a counter the call never
+   * touched: free credits on one side, a paid-for failure on the other.
+   */
+  async function onBackend(backend, op, ...args) {
+    if (backend === "memory" || !redis) return memory[op](...args);
+    try {
+      return await redis[op](...args);
+    } catch (err) {
+      failed(err);
+      throw err;
+    }
   }
 
   const summary = (used, tokens) => ({
@@ -152,41 +227,69 @@ export function createAiQuota(config, { command = null, breaker = null, log = co
     limit,
     remaining: Math.max(0, limit - used),
     resetsAt: resetsAt().toISOString(),
-    // Whether the app as a whole still has AI capacity today, so the client can explain an
-    // unavailable button rather than letting it fail.
-    available: tokens < budget,
+    // Whether the app as a whole can still take even the cheapest AI call today, so the
+    // client can explain an unavailable button rather than letting it fail.
+    available: tokens + SMALLEST_ESTIMATE <= budget,
   });
+
+  const exhausted = () => {
+    const err = new HttpError(503, "AI has reached today’s capacity and is resting until tomorrow — everything else still works", "AI_BUDGET_EXHAUSTED");
+    err.headers = { "Retry-After": retryAfter() };
+    return err;
+  };
 
   return {
     limit,
 
-    /** Spends `cost` credits for the user, or throws 429 / 503. Returns the usage after. */
-    async reserve(userId, cost) {
-      const [userKey, tokenKey] = keys(userId);
-      const [status, used, tokens] = (await run("reserve", userKey, tokenKey, cost, limit, budget)).map(Number);
-      if (status === -2) {
-        const err = new HttpError(503, "AI has reached today’s capacity and is resting until tomorrow — everything else still works", "AI_BUDGET_EXHAUSTED");
-        err.headers = { "Retry-After": retryAfter() };
-        throw err;
-      }
+    /**
+     * Spends `cost` credits for the user and reserves `estimate` tokens from the app's
+     * budget, or throws 429 / 503. Returns the usage after the charge, plus the receipt
+     * that `settle` and `refund` need: which keys, which day and which backend took it.
+     */
+    async reserve(userId, cost, estimate = 0) {
+      const d = day();
+      const [userKey, tokenKey] = keys(userId, d);
+      const { backend, value } = await run("reserve", userKey, tokenKey, cost, limit, budget, estimate);
+      const [status, used, tokens] = value.map(Number);
+      if (status === -2) throw exhausted();
       if (status === -1) {
         const err = new HttpError(429, `You’ve used today’s ${limit} AI credits — they reset at midnight UTC`, "AI_QUOTA_EXCEEDED");
         err.headers = { "Retry-After": retryAfter() };
         throw err;
       }
-      return summary(used, tokens);
+      return { ...summary(used, tokens), receipt: { userKey, tokenKey, day: d, backend, cost, estimate, used, tokens } };
     },
 
-    /** Gives credits back after a call that failed. Never throws: a refund is best effort. */
-    async refund(userId, cost) {
+    /** Gives a receipt's credits back after a call that failed. Never throws. */
+    async refund(receipt) {
       try {
-        await run("refund", keys(userId)[0], cost);
+        await onBackend(receipt.backend, "refund", receipt.userKey, receipt.cost);
+        receipt.used = Math.max(0, receipt.used - receipt.cost);
       } catch (err) {
         log.error?.(err);
       }
     },
 
-    /** Adds what a call really cost to the app's daily budget. Never throws. */
+    /**
+     * Replaces the receipt's token estimate with what the call really used (zero for a
+     * call that never reached the provider), on the same day and backend it was reserved
+     * on. Returns the usage after, which is what the response reports. Never throws.
+     */
+    async settle(receipt, actualTokens) {
+      const delta = Math.round(actualTokens > 0 ? actualTokens : 0) - receipt.estimate;
+      let tokens = receipt.tokens;
+      if (delta !== 0) {
+        try {
+          tokens = Number(await onBackend(receipt.backend, "addTokens", receipt.tokenKey, delta));
+        } catch (err) {
+          log.error?.(err);
+          tokens = Math.max(0, receipt.tokens + delta);
+        }
+      }
+      return summary(receipt.used, tokens);
+    },
+
+    /** Adds tokens spent outside a receipt to today's budget. Never throws. */
     async recordTokens(n) {
       if (!(n > 0)) return;
       try {
@@ -196,10 +299,27 @@ export function createAiQuota(config, { command = null, breaker = null, log = co
       }
     },
 
+    /**
+     * The provider says its own daily limit is reached: close the app's budget for the
+     * rest of the UTC day, so everyone gets the clear "back tomorrow" answer up front
+     * instead of each call failing at the provider. Never throws.
+     */
+    async exhaust() {
+      try {
+        await run("exhaust", keys("-")[1], budget);
+      } catch (err) {
+        log.error?.(err);
+      }
+    },
+
     async usage(userId) {
       const [userKey, tokenKey] = keys(userId);
-      const [used, tokens] = await run("read", userKey, tokenKey);
+      const { value } = await run("read", userKey, tokenKey);
+      const [used, tokens] = value;
       return summary(used, tokens);
     },
+
+    /** For tests: how many entries the in-process fallback holds. */
+    memorySize: () => memory.size(),
   };
 }

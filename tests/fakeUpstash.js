@@ -45,13 +45,14 @@ export function fakeUpstash() {
         keys.set(k, { value, expiresAt: seconds ? Date.now() + Number(seconds) * 1000 : prev?.expiresAt ?? null });
       };
       if (script.includes("{ -2")) {
-        const [, , userKey, tokenKey, cost, limit, budget, ttl] = args;
+        const [, , userKey, tokenKey, cost, limit, budget, ttl, estimate] = args;
         const used = num(userKey);
         const tokens = num(tokenKey);
-        if (tokens >= Number(budget)) return [-2, used, tokens];
+        if (tokens >= Number(budget) || tokens + Number(estimate) > Number(budget)) return [-2, used, tokens];
         if (used + Number(cost) > Number(limit)) return [-1, used, tokens];
         put(userKey, used + Number(cost), ttl);
-        return [1, used + Number(cost), tokens];
+        put(tokenKey, tokens + Number(estimate), ttl);
+        return [1, used + Number(cost), tokens + Number(estimate)];
       }
       if (script.includes("DECRBY")) {
         const [, , userKey, cost] = args;
@@ -62,7 +63,12 @@ export function fakeUpstash() {
       }
       if (script.includes("INCRBY")) {
         const [, , tokenKey, n, ttl] = args;
-        put(tokenKey, num(tokenKey) + Number(n), ttl);
+        put(tokenKey, Math.max(0, num(tokenKey) + Number(n)), ttl);
+        return num(tokenKey);
+      }
+      if (script.includes("total < tonumber(ARGV[1])")) {
+        const [, , tokenKey, budget, ttl] = args;
+        if (num(tokenKey) < Number(budget)) put(tokenKey, Number(budget), ttl);
         return num(tokenKey);
       }
 
