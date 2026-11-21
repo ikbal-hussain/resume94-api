@@ -8,7 +8,37 @@ Every entry below corresponds to work that actually reached `main`.
 
 ## [Unreleased]
 
+### Fixed
+- **A Redis outage no longer takes AI down.** Upstash deleted the idle free database in
+  November 2026 and every AI route answered 503 for every user, while `/api/health` still
+  said 200. Rate limiters now degrade to counting in-process when Upstash cannot answer —
+  weaker, but still a limit — instead of refusing (AI) or not limiting at all (auth,
+  resumes). A shared breaker skips Upstash for 30 s after a failure so a hanging Upstash
+  cannot slow every request by its 2 s deadline. `AI_FAIL_CLOSED=true` restores the old
+  refusal for a paid provider key.
+- **`/api/health` answers 503 when a dependency fails** — MongoDB, or a configured
+  rate-limit store — with the same body plus `databaseReachable`, so any uptime monitor
+  can judge it by status code. A MongoDB failure used to surface as a 500 `INTERNAL`.
+  The ping has a 5 s deadline.
+- The smoke test's wait for the new commit accepts a 503 body, so a failing dependency is
+  reported as itself rather than as "deploy never went live". Its database check now
+  judges only `databaseReachable`; a rate-limit store outage is reported by the store check
+  alone instead of pointing at MongoDB too.
+- `AI_FAIL_CLOSED` accepts the usual true/false spellings and `CRON_SECRET` treats empty
+  or too-short values as unset; an unrecognised value logs a warning instead of stopping
+  the whole API at startup.
+- After the 30 s cool-down the breaker lets **one** probe through instead of every waiting
+  request, and logs once per trip even when requests fail concurrently. `resetKey` clears
+  both the shared and the in-process count.
+- `/api/health` reports `rateLimitFallbackActive` while limiters are counting in-process.
+
 ### Added
+- The health probe **writes a key and reads it back** instead of sending a PING, which
+  proves a counter would be stored and is certainly activity for Upstash's 14-day idle
+  timer: the uptime monitor on `/api/health` now keeps the free database alive.
+- `GET /api/cron/keepalive` and a weekly Vercel Cron (Mondays 08:30 IST, `0 3 * * 1` UTC)
+  as the fallback keep-alive. Off unless `CRON_SECRET` is set (404 otherwise); bearer
+  token compared in constant time; writes one key of its own and no counter.
 - `POST /api/auth/google` — signs in or registers from the ID token Google's sign-in
   button issues in the browser. The signature, issuer and audience are verified
   server-side; the session that follows is the ordinary one. Unset `GOOGLE_CLIENT_ID`

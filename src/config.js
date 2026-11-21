@@ -33,6 +33,16 @@ const schema = z.object({
   // work and the tests, wrong in production. /api/health reports which one is live.
   UPSTASH_REDIS_REST_URL: z.string().optional(),
   UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  // What the AI limiters do when Upstash cannot answer. Unset (false), they keep counting
+  // in-process, like every other limiter: on a free provider tier there is no bill to
+  // protect, and refusing turned a deleted Redis database into an AI outage. Set it to
+  // "true" with a paid key, where an unmetered minute costs money and refusing is cheaper.
+  // Read leniently in loadConfig (see readBoolean): a typo here must not take down auth.
+  AI_FAIL_CLOSED: z.boolean().default(false),
+  // Bearer secret Vercel Cron sends with the weekly keep-alive. Unset means the route
+  // answers 404, so the job is off by default and inert on any other host. Empty or
+  // shorter than 16 characters counts as unset, with a warning (see loadConfig).
+  CRON_SECRET: z.string().optional(),
   // Basic-auth credentials for /api/docs in production. Unset means the docs are
   // not served there at all.
   DOCS_USER: z.string().optional(),
@@ -43,8 +53,41 @@ const schema = z.object({
   VERCEL_GIT_COMMIT_SHA: z.string().optional(),
 });
 
-export function loadConfig(env = process.env) {
-  const cfg = schema.parse(env);
+const TRUE = new Set(["true", "1", "yes", "on"]);
+const FALSE = new Set(["false", "0", "no", "off"]);
+
+/**
+ * The usual spellings of a boolean, case-insensitive. Anything else falls back to the
+ * default with a warning instead of throwing: these settings each govern one feature,
+ * and a strict parse turned "AI_FAIL_CLOSED=1" into every route answering 500.
+ */
+function readBoolean(env, name, fallback, warn) {
+  const raw = env[name];
+  if (raw === undefined || String(raw).trim() === "") return fallback;
+  const value = String(raw).trim().toLowerCase();
+  if (TRUE.has(value)) return true;
+  if (FALSE.has(value)) return false;
+  warn(`[config] ${name}="${raw}" is not true/false; using the default (${fallback}).`);
+  return fallback;
+}
+
+/** A secret that is empty counts as unset; one too short to be safe is ignored, loudly. */
+function readSecret(env, name, minLength, warn) {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  if (raw.length < minLength) {
+    warn(`[config] ${name} is shorter than ${minLength} characters, so it is ignored (the feature it guards stays off).`);
+    return undefined;
+  }
+  return raw;
+}
+
+export function loadConfig(env = process.env, { warn = console.warn } = {}) {
+  const cfg = schema.parse({
+    ...env,
+    AI_FAIL_CLOSED: readBoolean(env, "AI_FAIL_CLOSED", false, warn),
+    CRON_SECRET: readSecret(env, "CRON_SECRET", 16, warn),
+  });
   if (!cfg.JWT_SECRET) {
     if (cfg.NODE_ENV === "production") {
       throw new Error(

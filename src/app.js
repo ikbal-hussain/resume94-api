@@ -12,11 +12,12 @@ import { createGoogleService } from "./services/google.js";
 import { createRateLimitService } from "./services/rateLimit/index.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
 import { notFound, errorHandler } from "./middleware/errors.js";
-import { makeWithTransaction } from "./db.js";
+import { makeWithTransaction, pingDatabase } from "./db.js";
 import { docsGuard } from "./middleware/docsAuth.js";
 import { authRouter } from "./routes/auth.js";
 import { resumesRouter } from "./routes/resumes.js";
 import { aiRouter } from "./routes/ai.js";
+import { cronRouter } from "./routes/cron.js";
 import swaggerUi from "swagger-ui-express";
 import { buildOpenApiDocument } from "./openapi.js";
 
@@ -86,11 +87,23 @@ export function createApp(config, {
   // answering, and whether each dependency it cannot reach from outside is wired up.
   // mail is included deliberately -- a MAIL_PROVIDER left at "console" in production
   // is invisible from any other endpoint until someone requests a password reset.
+  //
+  // The status code is the verdict, so any uptime monitor can read it without parsing:
+  // 503 when a dependency that should answer did not — MongoDB, or a configured Redis.
+  // It answered 200 with `rateLimitStoreReachable: false` for weeks while every AI route
+  // was down, and the monitor watching it saw nothing wrong. The body still says which
+  // dependency failed. An unconfigured store (null) is not a failure here: that is the
+  // normal local setup, and production being on it is the smoke test's job to catch.
   app.get("/api/health", async (_req, res) => {
-    await db.command({ ping: 1 });
-    res.json({
-      status: "ok",
+    const [databaseReachable, rateLimitStoreReachable] = await Promise.all([
+      pingDatabase(db, { log }),
+      rateLimits.ping(),
+    ]);
+    const healthy = databaseReachable && rateLimitStoreReachable !== false;
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? "ok" : "degraded",
       commit: config.VERCEL_GIT_COMMIT_SHA ?? null,
+      databaseReachable,
       aiConfigured: Boolean(config[config.AI_PROVIDER === "groq" ? "GROQ_API_KEY" : "GEMINI_API_KEY"]),
       aiProvider: config.AI_PROVIDER,
       mailConfigured: mail.configured,
@@ -100,16 +113,23 @@ export function createApp(config, {
       // instances. Nothing else in the API shows that, and the route it matters most on
       // is the one that pays a provider per call.
       rateLimitStore: rateLimits.provider,
-      // Reachable, not merely configured. A mistyped token reads as "upstash" from the
-      // line above while every AI request 503s and every other limit passes through
-      // uncounted, so this is probed the way the database above is pinged rather than
-      // inferred from the environment. null when there is nothing to reach.
-      rateLimitStoreReachable: await rateLimits.ping(),
+      // Reachable, not merely configured: the probe writes a key and reads it back. A
+      // mistyped token reads as "upstash" from the line above while every limit runs on
+      // its in-process fallback, so this is probed rather than inferred from the
+      // environment. null when there is nothing to reach.
+      rateLimitStoreReachable,
+      // True while a recent Upstash failure has the limiters counting in this process
+      // (the breaker is open). The probe above is cached for 30 s and runs on its own, so
+      // without this an Upstash that keeps timing out on counter calls but answers the
+      // probe would read as healthy while limits were per instance. Reported, not part of
+      // the 503 verdict: degraded limits are a warning, and the probe owns "down".
+      rateLimitFallbackActive: rateLimits.fallbackActive(),
     });
   });
   app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
-  app.use("/api/ai", aiRouter({ ai, requireAuth, rateLimits, testing, log }));
+  app.use("/api/ai", aiRouter({ config, ai, requireAuth, rateLimits, testing, log }));
+  app.use("/api/cron", cronRouter({ config, rateLimits, log }));
 
   app.use(notFound);
   app.use(errorHandler(log));

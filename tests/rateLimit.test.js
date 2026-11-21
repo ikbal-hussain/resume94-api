@@ -4,97 +4,11 @@ import request from "supertest";
 import rateLimit from "express-rate-limit";
 import { createRateLimitService } from "../src/services/rateLimit/index.js";
 import { UpstashStore } from "../src/services/rateLimit/upstash.js";
+import { FallbackStore, createBreaker } from "../src/services/rateLimit/fallback.js";
 import { failClosed } from "../src/middleware/rateLimit.js";
 import { errorHandler } from "../src/middleware/errors.js";
-import { makeApp, startMongo, stopMongo } from "./helpers.js";
-
-const CREDENTIALS = {
-  UPSTASH_REDIS_REST_URL: "https://fake.upstash.io",
-  UPSTASH_REDIS_REST_TOKEN: "fake-token",
-};
-const quiet = { error() {}, warn() {}, info() {} };
-
-/**
- * Stands in for Upstash's REST endpoint.
- *
- * It holds the keys in one object and runs the handful of commands this store sends,
- * including the Lua increment — which is the only way to test the property that
- * matters: that two stores built from the same credentials, standing in for two warm
- * serverless instances, count against one counter rather than one each.
- */
-function fakeUpstash() {
-  const keys = new Map();
-  const calls = [];
-  let fail = null;
-
-  // Redis semantics, not convenient ones: a key with no expiry reports PTTL -1, an
-  // absent one reports -2, and DECR on a missing key creates it at -1. Modelling the
-  // inconvenient parts is the only way these tests can catch the bugs that live there.
-  const pttl = (key) => {
-    const entry = keys.get(key);
-    if (!entry) return -2;
-    if (entry.expiresAt === null) return -1;
-    if (entry.expiresAt <= Date.now()) {
-      keys.delete(key);
-      return -2;
-    }
-    return entry.expiresAt - Date.now();
-  };
-
-  const run = ([command, ...args]) => {
-    if (command === "EVAL") {
-      const [script, , key, windowMs] = args;
-
-      if (script.includes("INCR")) {
-        pttl(key); // expire first, as Redis would before the INCR lands
-        const entry = keys.get(key) ?? { hits: 0, expiresAt: null };
-        entry.hits += 1;
-        keys.set(key, entry);
-        // Follows the script it was handed rather than the behaviour we want: a fake
-        // that always repairs the TTL would let a store that never repairs it pass.
-        const repairs = script.includes("ttl < 0");
-        let ttl = pttl(key);
-        if (entry.hits === 1 || (repairs && ttl < 0)) {
-          entry.expiresAt = Date.now() + Number(windowMs);
-          ttl = Number(windowMs);
-        }
-        return [entry.hits, ttl];
-      }
-
-      if (script.includes("EXISTS")) {
-        if (pttl(key) === -2) return 0; // absent: the key must not be created
-        const entry = keys.get(key);
-        entry.hits -= 1;
-        return entry.hits;
-      }
-      throw new Error("fake upstash got an unrecognised script");
-    }
-    if (command === "PING") return "PONG";
-    if (command === "DEL") return keys.delete(args[0]) ? 1 : 0;
-    throw new Error(`fake upstash got an unexpected command: ${command}`);
-  };
-
-  const fetchImpl = async (url, init) => {
-    const args = JSON.parse(init.body);
-    calls.push({ url, authorization: init.headers.Authorization, args });
-    if (fail) return fail;
-    return { ok: true, status: 200, json: async () => ({ result: run(args) }) };
-  };
-
-  return {
-    fetchImpl,
-    calls,
-    keys,
-    /** Strips a key's expiry, as a half-applied write or a bare DECR would leave it. */
-    stripExpiry(suffix) {
-      for (const [k, entry] of keys) if (k.endsWith(suffix)) entry.expiresAt = null;
-    },
-    /** Makes every later call answer like an unreachable or angry Upstash. */
-    breakWith(response) {
-      fail = response;
-    },
-  };
-}
+import { makeApp, signedInAgent, startMongo, stopMongo } from "./helpers.js";
+import { CREDENTIALS, quiet, fakeUpstash } from "./fakeUpstash.js";
 
 const hitsFor = (keys, suffix) => [...keys.entries()].find(([k]) => k.endsWith(suffix))?.[1].hits;
 
@@ -173,7 +87,26 @@ describe("credentials that are present but wrong", () => {
     await service.ping();
     // Otherwise anyone can burn the daily command quota by hammering health — and an
     // exhausted quota breaks the limiters outright.
-    expect(upstash.calls.filter((c) => c.args[0] === "PING")).toHaveLength(1);
+    expect(upstash.calls.filter((c) => c.args[0] === "EVAL" && c.args[3] === "health:last-check")).toHaveLength(1);
+  });
+
+  it("probes with a write it reads back, not a bare PING", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    expect(await service.ping()).toBe(true);
+    // A write is what Upstash's idle timer certainly counts, and what proves a counter
+    // would actually be stored. The key expires on its own.
+    const probe = upstash.keys.get("health:last-check");
+    expect(probe.value).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(probe.expiresAt).toBeGreaterThan(Date.now());
+    expect(upstash.calls.some((c) => c.args[0] === "PING")).toBe(false);
+  });
+
+  it("reports unreachable when the write does not read back", async () => {
+    // A proxy or a misrouted endpoint can answer 200 with something else entirely.
+    const fetchImpl = async () => ({ ok: true, status: 200, json: async () => ({ result: "not-what-was-written" }) });
+    const service = createRateLimitService({ ...CREDENTIALS }, fetchImpl, quiet);
+    expect(await service.ping()).toBe(false);
   });
 
   it("has nothing to probe on the in-process store", async () => {
@@ -309,11 +242,13 @@ describe("when the counter cannot be reached", () => {
     return app;
   };
 
+  // These tests are about what a limiter does with a store error, so they ask for the
+  // bare Upstash store (`degrade: false`) — the default store degrades and never errors.
   const limiter = (service, opts) =>
     rateLimit({
       windowMs: 60_000,
       limit: 5,
-      store: service.store("test:"),
+      store: service.store("test:", { degrade: false }),
       keyGenerator: () => "ada",
       ...opts,
     });
@@ -374,5 +309,238 @@ describe("the app reports which store is live", () => {
     const app = await makeApp(CREDENTIALS, { rateLimits: createRateLimitService(CREDENTIALS, upstash.fetchImpl, quiet) });
     const res = await request(app).get("/api/health");
     expect([res.body.rateLimitStore, res.body.rateLimitStoreReachable]).toEqual(["upstash", false]);
+    // And says so in the status code, which is all an uptime monitor reads.
+    expect([res.status, res.body.status]).toEqual([503, "degraded"]);
+  });
+
+  // The probe is cached and runs on its own; a counter call that just failed is what
+  // puts the limiters on memory, and only the breaker knows about it.
+  it("reports when the limiters have fallen back to counting in this process", async () => {
+    const service = createRateLimitService(CREDENTIALS, fakeUpstash().fetchImpl, quiet);
+    const app = await makeApp(CREDENTIALS, { rateLimits: service });
+    expect((await request(app).get("/api/health")).body.rateLimitFallbackActive).toBe(false);
+
+    const failing = { prefix: "x:", init() {}, increment: async () => Promise.reject(new Error("timeout")) };
+    const store = service.store("x:");
+    store.primary = failing;
+    store.init({ windowMs: 60_000 });
+    await store.increment("ada");
+    const res = await request(app).get("/api/health");
+    expect([res.status, res.body.rateLimitFallbackActive]).toEqual([200, true]);
+  });
+
+  it("reports no fallback on the in-process store, where there is nothing to fall back from", async () => {
+    expect((await request(await makeApp()).get("/api/health")).body.rateLimitFallbackActive).toBe(false);
+  });
+});
+
+describe("degrading instead of failing when the shared store is down", () => {
+  const appWith = (service, limit, storeOptions) => {
+    const app = express();
+    app.get(
+      "/",
+      rateLimit({
+        windowMs: 60_000,
+        limit,
+        store: service.store("test:", storeOptions),
+        keyGenerator: () => "ada",
+        passOnStoreError: false,
+        message: { error: { code: "RATE_LIMITED", message: "slow down" } },
+      }),
+      (_req, res) => res.json({ ok: true })
+    );
+    app.use(errorHandler(quiet));
+    return app;
+  };
+  const broken = () => {
+    const upstash = fakeUpstash();
+    upstash.breakWith({ ok: false, status: 500, text: async () => "boom" });
+    return upstash;
+  };
+
+  // The outage this exists for: Upstash deleted the idle free database and every AI
+  // route answered 503 until someone noticed. The limit now keeps working, in-process.
+  it("keeps enforcing the limit, counting in this process", async () => {
+    const service = createRateLimitService({ ...CREDENTIALS }, broken().fetchImpl, quiet);
+    const app = appWith(service, 2);
+
+    expect((await request(app).get("/")).status).toBe(200);
+    expect((await request(app).get("/")).status).toBe(200);
+    // Not unlimited: failing open would let this through too.
+    const third = await request(app).get("/");
+    expect([third.status, third.body.error.code]).toEqual([429, "RATE_LIMITED"]);
+  });
+
+  // `degrade: false` must hand the error to the limiter, or AI_FAIL_CLOSED would be a
+  // setting that changes nothing. What the limiter then does with it (503 through
+  // failClosed) is covered in "when the counter cannot be reached" above.
+  it("passes the error on when asked not to degrade", async () => {
+    const service = createRateLimitService({ ...CREDENTIALS }, broken().fetchImpl, quiet);
+    const store = service.store("test:", { degrade: false });
+    store.init({ windowMs: 60_000 });
+    await expect(store.increment("ada")).rejects.toThrow(/upstash responded 500/);
+  });
+
+  // Each Upstash call can take its full 2 s deadline when Upstash hangs. Without the
+  // breaker every limited request would pay that for the length of the outage.
+  it("stops calling the shared store for a while after it fails", async () => {
+    const upstash = broken();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    const app = appWith(service, 10);
+
+    for (let i = 0; i < 4; i++) await request(app).get("/");
+    expect(upstash.calls).toHaveLength(1);
+  });
+
+  it("tries the shared store again once the cool-down has passed", async () => {
+    let now = 0;
+    const breaker = createBreaker({ coolDownMs: 30_000, now: () => now });
+    let calls = 0;
+    const primary = {
+      prefix: "test:",
+      init() {},
+      async increment() {
+        calls++;
+        throw new Error("down");
+      },
+    };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+
+    await store.increment("ada");
+    await store.increment("ada");
+    expect(calls).toBe(1);
+    now = 30_001;
+    await store.increment("ada");
+    expect(calls).toBe(2);
+  });
+
+  // Letting everyone through at the end of the cool-down would send a burst of 2 s calls,
+  // and a burst of log lines, at an Upstash that is still down, every 30 s.
+  it("lets exactly one probe through after the cool-down, and closes when it succeeds", async () => {
+    let now = 0;
+    const breaker = createBreaker({ coolDownMs: 30_000, now: () => now });
+    let calls = 0;
+    let healthy = false;
+    let release;
+    const primary = {
+      prefix: "test:",
+      init() {},
+      async increment() {
+        calls++;
+        if (!healthy) throw new Error("down");
+        if (calls === 2) await new Promise((r) => (release = r)); // hold the probe open
+        return { totalHits: 1, resetTime: undefined };
+      },
+    };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+
+    await store.increment("ada");
+    expect(calls).toBe(1);
+    now = 30_001;
+    healthy = true;
+    const probe = store.increment("ada"); // the probe, held open
+    await Promise.all([store.increment("ada"), store.increment("ada")]); // others stay on memory
+    expect(calls).toBe(2);
+    expect(breaker.isOpen()).toBe(true);
+
+    release();
+    await probe;
+    expect(breaker.isOpen()).toBe(false);
+    await store.increment("ada");
+    expect(calls).toBe(3);
+  });
+
+  it("re-opens for another cool-down when the probe fails", async () => {
+    let now = 0;
+    const breaker = createBreaker({ coolDownMs: 30_000, now: () => now });
+    let calls = 0;
+    const primary = { prefix: "t:", init() {}, increment: async () => (calls++, Promise.reject(new Error("down"))) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.increment("ada");
+    now = 30_001;
+    await store.increment("ada"); // probe fails
+    now = 40_000;
+    await store.increment("ada");
+    expect(calls).toBe(2);
+  });
+
+  // After an outage the client may have hits in either store; clearing one would leave
+  // the other still limiting them.
+  it("resets a key in both stores", async () => {
+    const breaker = createBreaker();
+    const reset = [];
+    const primary = { prefix: "t:", init() {}, increment: async () => ({ totalHits: 1 }), resetKey: async (k) => reset.push(k) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.memory.increment("ada");
+    await store.resetKey("ada");
+    expect(reset).toEqual(["ada"]);
+    expect((await store.memory.get("ada"))?.totalHits ?? 0).toBe(0);
+  });
+
+  it("still clears the in-process count when the shared store fails the reset", async () => {
+    const breaker = createBreaker();
+    const primary = { prefix: "t:", init() {}, resetKey: async () => Promise.reject(new Error("down")) };
+    const store = new FallbackStore(primary, breaker, quiet);
+    store.init({ windowMs: 60_000 });
+    await store.memory.increment("ada");
+    await expect(store.resetKey("ada")).resolves.toBeUndefined();
+    expect((await store.memory.get("ada"))?.totalHits ?? 0).toBe(0);
+    expect(breaker.isOpen()).toBe(true);
+  });
+
+  it("logs the failure once per trip, even when requests fail concurrently", async () => {
+    const logged = [];
+    const breaker = createBreaker();
+    const primary = { prefix: "t:", init() {}, increment: async () => Promise.reject(new Error("down")) };
+    const store = new FallbackStore(primary, breaker, { error: (m) => logged.push(m) });
+    store.init({ windowMs: 60_000 });
+    await Promise.all([store.increment("a"), store.increment("b"), store.increment("c")]);
+    expect(logged).toHaveLength(1);
+  });
+
+  it("logs the failure once per trip, not once per request", async () => {
+    const logged = [];
+    const service = createRateLimitService({ ...CREDENTIALS }, broken().fetchImpl, { error: (m) => logged.push(m) });
+    const app = appWith(service, 10);
+    for (let i = 0; i < 5; i++) await request(app).get("/");
+    expect(logged.filter((m) => String(m).includes("[rate-limit] shared store failed"))).toHaveLength(1);
+  });
+
+  it("counts in Upstash, not in memory, while Upstash answers", async () => {
+    const upstash = fakeUpstash();
+    const service = createRateLimitService({ ...CREDENTIALS }, upstash.fetchImpl, quiet);
+    await request(appWith(service, 5)).get("/");
+    expect(hitsFor(upstash.keys, "ada")).toBe(1);
+  });
+});
+
+describe("the AI routes when the shared store is down", () => {
+  beforeAll(startMongo);
+  afterAll(stopMongo);
+
+  // The limiters are skipped under NODE_ENV=test, so these run the real app as
+  // development to exercise them end to end.
+  const aiAppWith = async (overrides = {}) => {
+    const upstash = fakeUpstash();
+    upstash.breakWith({ ok: false, status: 500, text: async () => "boom" });
+    const config = { NODE_ENV: "development", ...CREDENTIALS, ...overrides };
+    return makeApp(config, { rateLimits: createRateLimitService(config, upstash.fetchImpl, quiet) });
+  };
+  const summary = { role: "Engineer", experience: "3 years", keySkills: "Go" };
+
+  it("keeps answering by default", async () => {
+    const agent = await signedInAgent(await aiAppWith());
+    const res = await agent.post("/api/ai/summary").send(summary);
+    expect([res.status, res.body.text]).toEqual([200, "A great summary."]);
+  });
+
+  it("answers 503 when AI_FAIL_CLOSED is set, as it should with a paid key", async () => {
+    const agent = await signedInAgent(await aiAppWith({ AI_FAIL_CLOSED: "true" }));
+    const res = await agent.post("/api/ai/summary").send(summary);
+    expect([res.status, res.body.error.code]).toEqual([503, "RATE_LIMIT_UNAVAILABLE"]);
   });
 });

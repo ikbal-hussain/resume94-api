@@ -61,7 +61,11 @@ async function waitForDeploy() {
   while (Date.now() < deadline) {
     const { status, body } = await get("/api/health").catch(() => ({ status: 0, body: null }));
     const live = body?.commit ?? null;
-    if (status === 200 && live === EXPECT_COMMIT) {
+    // 503 counts as "the new build is answering". Health returns 503 when a dependency is
+    // down, and the body still names the commit; waiting for a 200 here would sit out the
+    // whole deadline and report "not live" instead of the dependency that actually failed.
+    // The checks below are what judge the answer.
+    if ((status === 200 || status === 503) && live === EXPECT_COMMIT) {
       console.log(`• ${want} is live\n`);
       return;
     }
@@ -92,11 +96,12 @@ const expect = (condition, message) => {
 async function run() {
   await waitForDeploy();
 
-  await check("health: 200, database reachable", async () => {
+  // Only the database. Health also answers 503 when the rate-limit store is down, and
+  // that outage belongs to the "rate limits share a store" check below: failing here too
+  // would point whoever is on call at MongoDB for an Upstash problem.
+  await check("health: database reachable", async () => {
     const { status, body } = await get("/api/health");
-    // The DB ping runs inside the handler, so a 200 here also proves Mongo answered.
-    expect(status === 200, `expected 200, got ${status}`);
-    expect(body?.status === "ok", `status was ${body?.status}`);
+    expect(body?.databaseReachable === true, `databaseReachable was ${body?.databaseReachable} (HTTP ${status})`);
     return `commit ${body.commit ? body.commit.slice(0, 7) : "unknown"}`;
   });
 

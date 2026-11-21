@@ -9,6 +9,34 @@ export async function connectDb(uri, dbName) {
 }
 
 /**
+ * Whether MongoDB answers a ping within `timeoutMs`, as a boolean rather than a throw.
+ *
+ * /api/health used to let the ping throw, which reached the error handler as a 500
+ * INTERNAL — indistinguishable from a bug in the route. It now reports the database as
+ * one dependency among several and answers 503 itself. The deadline matters because the
+ * driver will wait up to serverSelectionTimeoutMS (8 s) for an unreachable cluster, and an
+ * uptime monitor with a short timeout would record that as a timeout, not as "the
+ * database is down".
+ */
+export async function pingDatabase(db, { timeoutMs = 5_000, log = console } = {}) {
+  let timer;
+  try {
+    await Promise.race([
+      db.command({ ping: 1 }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`MongoDB did not answer a ping within ${timeoutMs} ms`)), timeoutMs);
+      }),
+    ]);
+    return true;
+  } catch (err) {
+    log.error?.(err);
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Returns a `withTransaction(fn)` that runs `fn(session)` as one atomic unit.
  *
  * Transactions need a replica set or a sharded cluster; Atlas is one, a standalone

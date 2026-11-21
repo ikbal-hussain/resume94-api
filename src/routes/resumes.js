@@ -17,9 +17,10 @@ export function resumesRouter({ resumes, requireAuth, rateLimits, testing }) {
       legacyHeaders: false,
       skip: () => testing,
       store: rateLimits.store("resumes:"),
-      // Fail open. A counter outage here must not stop someone saving their own
-      // resume: the worst an unmetered minute costs is database writes we already
-      // pay for, which is not the trade the AI routes make.
+      // The store degrades to an in-process count when Upstash is down, and this is
+      // the backstop beyond that: a counter outage must never stop someone saving their
+      // own resume. The worst an unmetered minute costs is database writes we already
+      // pay for.
       passOnStoreError: true,
       // Per account, not per IP. The IP is only a fallback — requireAuth runs first,
       // so it is reached only if that ever changes. It goes through ipKeyGenerator

@@ -33,9 +33,12 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   // token probes spend the login budget. All three are keyed by IP through the default
   // key generator, which already reduces an IPv6 address to its /56 subnet.
   //
-  // They fail open, like the resume routes and unlike the AI ones. A counter outage
-  // that locked everybody out of signing in would be a worse outage than the brute
-  // force it exists to slow down, and the password hash is the real defence there.
+  // When the shared counter is down they keep counting in this process (the store
+  // degrades; see services/rateLimit/fallback.js), so brute-force protection weakens
+  // rather than disappearing. `passOnStoreError: true` is the second line: if even the
+  // fallback threw, a counter outage must not lock everybody out of signing in — that
+  // would be a worse outage than the brute force it exists to slow down, and the
+  // password hash is the real defence there.
   //
   // The numbers were raised when the counters moved to a shared store, and the reason
   // is the whole point of that move: these limits used to be multiplied by the number
