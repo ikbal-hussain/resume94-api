@@ -272,13 +272,12 @@ export function authRouter({ config, users, passwordResets, mail, google, withTr
   // The page-load "is anyone signed in?" check. Unlike /me it answers 200 when nobody
   // is: on the landing page a signed-out visitor is the normal case, and /me's 401 made
   // every anonymous visit log a console error (Lighthouse "errors-in-console", RESUME-34).
-  // A cookie that no longer names a session is cleared so the next load skips the lookup.
+  //
+  // It never clears a stale cookie, though that would save a lookup: this check runs on
+  // page load, concurrently with a sign-in the user may already be submitting, and a late
+  // clearing Set-Cookie would delete the fresh token that sign-in just set.
   r.get("/session", async (req, res) => {
-    const user = await readSession(config, users, req);
-    if (!user && req.cookies?.[COOKIE_NAME]) {
-      res.clearCookie(COOKIE_NAME, { ...cookieOptions(config), maxAge: undefined });
-    }
-    res.set("Cache-Control", "no-store").json({ user });
+    res.set("Cache-Control", "no-store").json({ user: await readSession(config, users, req) });
   });
 
   r.patch("/me", requireAuth, validateBody(updateProfileSchema), async (req, res) => {

@@ -34,8 +34,8 @@ Every entry below corresponds to work that actually reached `main`.
 
 ### Added
 - **`GET /api/auth/session`**: the page-load "is anyone signed in?" check. Always 200,
-  with `user` null when there is no valid session (a stale cookie is cleared); a database
-  error is still a 5xx. `/auth/me` keeps its 401 for routes that need a session. The
+  with `user` null when there is no valid session; a database error is still a 5xx. It
+  never clears a stale cookie, since that could race a sign-in and delete its new token. `/auth/me` keeps its 401 for routes that need a session. The
   frontend's 401 from `/me` on every anonymous visit was logged as a browser console
   error and cost Lighthouse points (RESUME-34).
 - **A daily AI allowance per account, and a daily token budget for the app.** Each account

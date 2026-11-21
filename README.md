@@ -16,6 +16,7 @@ Errors are `{ "error": { "code", "message", "details?" } }`.
 | `POST /auth/register` `{name,email,password}` | Create account + session (201) |
 | `POST /auth/login` | Start session |
 | `POST /auth/logout` | Clear session (204) |
+| `GET /auth/session` | Current user or `null`, always 200 (the page-load check) |
 | `GET/PATCH/DELETE /auth/me` | Current user / rename / delete account and resumes |
 | `GET /resumes` · `POST /resumes` | List summaries · create |
 | `GET/PUT/DELETE /resumes/:id` | Read / replace / delete |

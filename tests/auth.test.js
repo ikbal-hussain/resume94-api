@@ -86,11 +86,24 @@ describe("auth", () => {
     expect((await agent.get("/api/auth/session")).body).toEqual({ user: null });
   });
 
-  it("treats a tampered session cookie as signed out on /session, and clears it", async () => {
+  it("treats a tampered session cookie as signed out on /session, without touching it", async () => {
     const res = await request(await makeApp()).get("/api/auth/session").set("Cookie", "token=abc.def.ghi");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ user: null });
-    expect(String(res.headers["set-cookie"])).toMatch(/^token=;/);
+    // Clearing could race a concurrent sign-in and delete the token it just set.
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("treats a valid token for a deleted account as signed out on /session", async () => {
+    const app = await makeApp();
+    const reg = await request(app).post("/api/auth/register").send({ name: "Ada", email: "d@example.com", password: "password123" });
+    const cookie = reg.headers["set-cookie"];
+    // The same cookie names a user first, so the null below is the deleted account, not a lost cookie.
+    expect((await request(app).get("/api/auth/session").set("Cookie", cookie)).body.user.email).toBe("d@example.com");
+    await request(app).delete("/api/auth/me").set("Cookie", cookie).expect(204);
+    const res = await request(app).get("/api/auth/session").set("Cookie", cookie);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ user: null });
   });
 
   it("rejects a tampered token", async () => {
