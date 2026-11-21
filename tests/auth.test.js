@@ -73,6 +73,26 @@ describe("auth", () => {
     expect((await agent.get("/api/auth/me")).status).toBe(401);
   });
 
+  it("answers /session with 200 whether or not anyone is signed in", async () => {
+    const app = await makeApp();
+    const anon = await request(app).get("/api/auth/session");
+    expect(anon.status).toBe(200);
+    expect(anon.body).toEqual({ user: null });
+    expect(anon.headers["cache-control"]).toBe("no-store");
+
+    const agent = await signedInAgent(app);
+    expect((await agent.get("/api/auth/session")).body.user.email).toBe("a@example.com");
+    await agent.post("/api/auth/logout").expect(204);
+    expect((await agent.get("/api/auth/session")).body).toEqual({ user: null });
+  });
+
+  it("treats a tampered session cookie as signed out on /session, and clears it", async () => {
+    const res = await request(await makeApp()).get("/api/auth/session").set("Cookie", "token=abc.def.ghi");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ user: null });
+    expect(String(res.headers["set-cookie"])).toMatch(/^token=;/);
+  });
+
   it("rejects a tampered token", async () => {
     const res = await request(await makeApp()).get("/api/auth/me").set("Cookie", "token=abc.def.ghi");
     expect(res.status).toBe(401);

@@ -377,6 +377,21 @@ export function buildOpenApiDocument() {
       "/auth/logout": {
         post: { tags: ["Auth"], summary: "Clear the session cookie", responses: { 204: { description: "Signed out" } } },
       },
+      "/auth/session": {
+        get: {
+          tags: ["Auth"],
+          summary: "Who is signed in, if anyone",
+          description:
+            "For the page-load session check. Always 200: `user` is null when there is no valid session " +
+            "(a stale cookie is cleared). Use `/auth/me` where a session is required.",
+          responses: {
+            200: {
+              description: "The signed-in user, or null",
+              ...json({ type: "object", required: ["user"], properties: { user: { ...userResponse.properties.user, nullable: true } } }),
+            },
+          },
+        },
+      },
       "/auth/me": {
         get: {
           tags: ["Auth"],
