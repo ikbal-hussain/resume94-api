@@ -385,7 +385,7 @@ export function buildOpenApiDocument() {
           tags: ["Auth"],
           summary: "Confirm an email address using the emailed link",
           description:
-            "Sent at sign-up and from the app's banner. Consumes the token and every other outstanding " +
+            "Sent at sign-up (at most 20 sign-up and resend emails per IP an hour; past that the account is still created, without the email) and from the app's banner. Consumes the token and every other outstanding " +
             "verification token for the account. Needs no session and starts none. A completed password " +
             "reset or a Google sign-in also verifies the address. Links expire after VERIFY_TOKEN_TTL_HOURS (48 by default).",
           requestBody: { required: true, ...json(ref("VerifyEmailBody")) },
@@ -405,7 +405,7 @@ export function buildOpenApiDocument() {
           responses: {
             204: { description: "Sent, or nothing to send" },
             401: unauthorized,
-            429: error("Too many emails (5 per hour per account)"),
+            429: error("Too many emails (5 per hour per account, 20 per hour per IP)"),
             503: error("The mail provider refused the message (MAIL_FAILED)"),
           },
         },

@@ -296,7 +296,11 @@ account no longer comes with a fresh daily AI allowance.
 
 1. `POST /auth/register` emails a link to `/verify-email?token=…`. A failed send is
    logged and the sign-up still succeeds; the app's banner can send another
-   (`POST /auth/verify-email/resend`, signed in, 5 an hour per account).
+   (`POST /auth/verify-email/resend`, signed in, 5 an hour per account). One IP gets 20
+   verification emails an hour across both (`VERIFY_MAILS_PER_HOUR_PER_IP`), so a
+   script registering made-up addresses cannot spend the provider quota that reset mail
+   shares; past it, sign-ups still succeed without the email. The provider call times
+   out after 8 seconds, so a stalled provider cannot hold a sign-up.
 2. Tokens use the same machinery as reset links (`repositories/oneTimeTokens.js`):
    32 random bytes, only the SHA-256 stored, single use, expiry in the query. They live
    in their own collection, so a reset link can never verify an address or the reverse.
@@ -305,7 +309,9 @@ account no longer comes with a fresh daily AI allowance.
 3. `POST /auth/verify-email` needs no session and starts none, because the link may be
    opened on another device and verifying is not a way to sign in.
 4. Other proof of the inbox counts too: a completed password reset, and a Google
-   sign-in (Google tokens with unverified emails are already refused).
+   sign-in (Google tokens with unverified emails are already refused). Accounts that had
+   a Google identity before verification existed are backfilled on cold start
+   (`backfillEmailVerified`) and again on their next Google sign-in.
 5. `users.emailVerifiedAt` stores the first proof; the API exposes `emailVerified`.
    AI routes answer 403 `EMAIL_UNVERIFIED` before any limiter runs, so a refused call
    spends nothing. `/ai/usage` stays open for the meter.
@@ -374,10 +380,15 @@ These are real and stated deliberately — each has a tracked fix.
    verified address, so each extra account now costs a working email, which disposable
    inbox services make cheap. The app-wide token budget caps the damage — the worst case
    is AI resting until tomorrow — but it is shared.
-2. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
+2. **Someone else can verify an account made with your address.** If a person signs up
+   with your address, the email comes to you, and clicking it verifies their account.
+   The email says to ignore it if you did not sign up; the reset flow still lets the
+   real owner take the address back. A confirmation step on the verify page would close
+   it, at the cost of a second click for everyone.
+3. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
    the user on every request, which covers deletion; the full answer is short-lived
    access tokens plus rotating refresh tokens.
-3. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
+4. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
    (Mumbai)**, costing roughly 200 ms per database round trip. Measured, not guessed.
    `"regions": ["bom1"]` in `vercel.json` is the obvious fix and **this account cannot
    use it**: a deployment carrying it fails before the build starts, with a 0ms build
@@ -385,6 +396,6 @@ These are real and stated deliberately — each has a tracked fix.
    feature. Everything the function talks to should therefore be co-located with
    `iad1`, not with Mumbai — which is why the Upstash database is in `us-east-1` even
    though the users and the database are in India.
-4. **Profile photos are base64 inside the resume document.** Object storage would be
+5. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
-5. **No error tracking.** A 500 in production is visible only in Vercel's logs.
+6. **No error tracking.** A 500 in production is visible only in Vercel's logs.

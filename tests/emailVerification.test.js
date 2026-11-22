@@ -158,3 +158,50 @@ describe("other proof of ownership", () => {
     expect(await app.locals.db.collection("emailVerifications").countDocuments()).toBe(0);
   });
 });
+
+describe("review fixes", () => {
+  it("an existing Google account without a verification date is verified at its next sign-in", async () => {
+    const app = await makeApp({}, { google: fakeGoogle(), mail: fakeMailer() });
+    await request(app).post("/api/auth/google").send({ credential: "good-token" }).expect(201);
+    await app.locals.db.collection("users").updateMany({}, { $unset: { emailVerifiedAt: "" } }); // pre-verification account
+    const res = await request(app).post("/api/auth/google").send({ credential: "good-token" }).expect(200);
+    expect(res.body.user.emailVerified).toBe(true);
+  });
+
+  it("backfills accounts that already had a Google identity, and only those", async () => {
+    const { backfillEmailVerified } = await import("../src/db.js");
+    const app = await makeApp({}, { mail: fakeMailer() });
+    const users = app.locals.db.collection("users");
+    await users.insertMany([
+      { name: "G", email: "g@example.com", googleId: "g-1", createdAt: new Date() },
+      { name: "P", email: "p@example.com", passwordHash: "x", googleId: null, createdAt: new Date() },
+    ]);
+    await backfillEmailVerified(app.locals.db);
+    expect((await users.findOne({ email: "g@example.com" })).emailVerifiedAt).toBeInstanceOf(Date);
+    expect((await users.findOne({ email: "p@example.com" })).emailVerifiedAt).toBeUndefined();
+  });
+
+  it("caps verification mail per address, without refusing the sign-up", async () => {
+    // Limiters are skipped under NODE_ENV=test, so this runs the app as development.
+    const mailer = fakeMailer();
+    const app = await makeApp({ NODE_ENV: "development", VERIFY_MAILS_PER_HOUR_PER_IP: "2" }, { mail: mailer });
+    for (const n of [1, 2, 3]) {
+      await request(app).post("/api/auth/register").send({ name: "A", email: `a${n}@example.com`, password: "password123" }).expect(201);
+    }
+    expect(mailer.sent).toHaveLength(2); // the third sign-up worked, but sent nothing
+
+    const agent = request.agent(app);
+    await agent.post("/api/auth/login").send({ email: "a3@example.com", password: "password123" }).expect(200);
+    const res = await agent.post("/api/auth/verify-email/resend").expect(429);
+    expect(res.body.error.code).toBe("RATE_LIMITED");
+  });
+
+  it("words the expiry for any setting", async () => {
+    const { verifyEmailEmail } = await import("../src/services/mail/templates/verifyEmail.js");
+    const text = (ttlHours) => verifyEmailEmail({ to: "a@b.c", name: "A", link: "https://x/y", ttlHours }).text;
+    expect(text(1)).toContain("expires in 1 hour.");
+    expect(text(12)).toContain("expires in 12 hours.");
+    expect(text(24)).toContain("expires in 1 day.");
+    expect(text(48)).toContain("expires in 2 days.");
+  });
+});

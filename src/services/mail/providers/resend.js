@@ -9,6 +9,9 @@ export const resendProvider = {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ from, to: [to], subject, html, text }),
+      // Sign-up waits on this send. A stalled provider must fail it, not hold the
+      // request until the function times out (the account already exists by then).
+      signal: AbortSignal.timeout(8000),
     });
 
     if (!res.ok) {

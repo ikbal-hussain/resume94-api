@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { ObjectId } from "mongodb";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
@@ -94,8 +93,27 @@ export function authRouter({ config, users, passwordResets, emailVerifications, 
     message: { error: { code: "RATE_LIMITED", message: "Too many attempts, try again later" } },
   });
 
-  // Its own budget: each request sends mail, but unlike forgot-password it needs a
-  // session, so it is metered per account as well as per address.
+  // Verification mail from one address, across sign-ups and resends. Every sign-up sends
+  // one, to an address nobody has proved exists, so without this one script could spend
+  // the provider's daily quota (shared with reset mail) and the domain's reputation on
+  // bounces. Over budget it does not refuse: a sign-up still creates the account, just
+  // without the email (the banner can send it later), and a resend answers 429. 20 an
+  // hour for the same CGNAT reason as the reset limiter.
+  const verifyMailBudget = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: config.VERIFY_MAILS_PER_HOUR_PER_IP,
+    store: rateLimits.store("auth:verify-mail-ip:"),
+    passOnStoreError: true,
+    standardHeaders: false,
+    legacyHeaders: false,
+    skip: () => testing,
+    handler: (req, _res, next) => {
+      req.verifyMailBudgetSpent = true;
+      next();
+    },
+  });
+
+  // On top of the address budget: a signed-in account asking again and again.
   const verifyMailLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     limit: 5,
@@ -110,8 +128,7 @@ export function authRouter({ config, users, passwordResets, emailVerifications, 
 
   /** Issues a verification link and emails it. Throws if the provider refuses. */
   const sendVerification = async (user) => {
-    // Stored as an ObjectId, like reset tokens, so the account cascade and consume() match it.
-    const token = await emailVerifications.create(new ObjectId(user.id), config.VERIFY_TOKEN_TTL_HOURS * 60);
+    const token = await emailVerifications.create(user.id, config.VERIFY_TOKEN_TTL_HOURS * 60);
     await mail.send(
       verifyEmailEmail({
         to: user.email,
@@ -127,18 +144,22 @@ export function authRouter({ config, users, passwordResets, emailVerifications, 
     return user;
   };
 
-  r.post("/register", limiter, validateBody(registerSchema), async (req, res) => {
+  r.post("/register", limiter, validateBody(registerSchema), verifyMailBudget, async (req, res) => {
     const { name, email, password } = req.body;
     if (await users.findCredentialsByEmail(email)) throw new HttpError(409, "Email already registered", "EMAIL_TAKEN");
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await users.create({ name, email, passwordHash });
     if (!user) throw new HttpError(409, "Email already registered", "EMAIL_TAKEN"); // lost a race
-    // The account works without it, so a failed send must not fail the sign-up: the
-    // banner in the app offers to send it again.
-    try {
-      await sendVerification(user);
-    } catch (err) {
-      log.error(`[mail] verification delivery failed: ${err.message}`);
+    // The account works without it, so a failed or skipped send must not fail the
+    // sign-up: the banner in the app offers to send it again.
+    if (req.verifyMailBudgetSpent) {
+      log.warn?.("[mail] verification skipped: this address has used its hourly mail budget");
+    } else {
+      try {
+        await sendVerification(user);
+      } catch (err) {
+        log.error(`[mail] verification delivery failed: ${err.message}`);
+      }
     }
     res.status(201).json({ user: startSession(res, user) });
   });
@@ -183,8 +204,16 @@ export function authRouter({ config, users, passwordResets, emailVerifications, 
 
     // Already linked: the subject id is the identity, not the address. Google addresses
     // can change, and matching on the id means a changed address still signs in here.
+    // Accounts made before email verification existed have no date yet; Google's claim
+    // is the proof, the same as when an account is created or linked here.
     const linked = await users.findByGoogleId(sub);
-    if (linked) return res.json({ user: startSession(res, linked) });
+    if (linked) {
+      if (!linked.emailVerified && emailVerified) {
+        await users.markEmailVerified(linked.id);
+        return res.json({ user: startSession(res, await users.findById(linked.id)) });
+      }
+      return res.json({ user: startSession(res, linked) });
+    }
 
     const normalisedEmail = email.trim().toLowerCase();
     const existing = await users.findCredentialsByEmail(normalisedEmail);
@@ -319,8 +348,9 @@ export function authRouter({ config, users, passwordResets, emailVerifications, 
 
   // "Send it again" from the banner. Signed in, so unlike forgot-password there is no
   // account to hide, and a failed send is reported rather than swallowed.
-  r.post("/verify-email/resend", requireAuth, verifyMailLimiter, async (req, res) => {
+  r.post("/verify-email/resend", requireAuth, verifyMailLimiter, verifyMailBudget, async (req, res) => {
     if (req.user.emailVerified) return res.status(204).end();
+    if (req.verifyMailBudgetSpent) throw new HttpError(429, "Too many emails sent. Try again in an hour.", "RATE_LIMITED");
     try {
       await sendVerification(req.user);
     } catch (err) {

@@ -8,7 +8,8 @@ const escapeHtml = (s = "") =>
  */
 export function verifyEmailEmail({ to, name, link, ttlHours }) {
   const greeting = name ? `Hi ${name},` : "Hi,";
-  const expiry = ttlHours % 24 === 0 ? `${ttlHours / 24} day${ttlHours === 24 ? "" : "s"}` : `${ttlHours} hours`;
+  const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const expiry = ttlHours % 24 === 0 ? plural(ttlHours / 24, "day") : plural(ttlHours, "hour");
 
   const text = [
     greeting,

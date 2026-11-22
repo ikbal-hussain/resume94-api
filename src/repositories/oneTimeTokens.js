@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { ObjectId } from "mongodb";
 
 /**
  * Only a SHA-256 digest of each token is stored, so a leaked database does not hand
@@ -16,10 +17,12 @@ export const hashToken = (token) => crypto.createHash("sha256").update(token).di
 export function oneTimeTokensRepo(col) {
   return {
     /** Issues a token, returning the raw value — the only time it exists outside the email. */
+    // `userId` may be the API's string id or an ObjectId; it is stored as an ObjectId so
+    // consume() and the account-deletion cascade match it.
     async create(userId, ttlMinutes) {
       const token = crypto.randomBytes(32).toString("base64url");
       await col.insertOne({
-        userId,
+        userId: userId instanceof ObjectId ? userId : new ObjectId(userId),
         tokenHash: hashToken(token),
         expiresAt: new Date(Date.now() + ttlMinutes * 60_000),
         usedAt: null,
