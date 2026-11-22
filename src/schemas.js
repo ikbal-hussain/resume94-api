@@ -112,6 +112,10 @@ export const resumeDataSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, "Must be a hex colour like #2563eb")
     .default("#2563eb"),
   sectionOrder: z.array(z.string().max(40)).max(20).default([]),
+
+  // The job posting this resume is tailored for (the job match, RESUME-26). Never
+  // rendered into the resume. 20k characters is a long posting several times over.
+  jobPosting: z.string().max(20_000).default(""),
 });
 
 export const resumeBodySchema = z.object({
@@ -262,4 +266,18 @@ export const summaryRequestSchema = z.object({
 export const improveRequestSchema = z.object({
   section: z.enum(["projects", "education", "experience", "certifications"]),
   content: z.string().trim().min(1).max(2000),
+});
+
+/**
+ * One bullet to rewrite for a job posting.
+ *
+ * `skills` are the posting's skills that the resume already shows somewhere, which the
+ * browser works out; the model may name one only where the bullet's own work used it.
+ * Skills the person has not claimed are never sent, so a rewrite cannot slip them in.
+ */
+export const tailorRequestSchema = z.object({
+  section: z.enum(["experience", "projects"]),
+  content: z.string().trim().min(1).max(500),
+  jobTitle: z.string().trim().max(120).default(""),
+  skills: z.array(z.string().trim().min(1).max(60)).max(15).default([]),
 });

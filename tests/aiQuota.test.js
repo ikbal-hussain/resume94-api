@@ -16,7 +16,7 @@ const summary = { role: "Engineer", experience: "3 years", keySkills: "Go" };
 
 describe("the daily AI allowance", () => {
   it("costs a summary and a bullet one credit, and an import five", () => {
-    expect(AI_COSTS).toEqual({ summary: 1, improve: 1, import: 5 });
+    expect(AI_COSTS).toEqual({ summary: 1, improve: 1, tailor: 1, import: 5 });
   });
 
   it("spends credits and reports what is left", async () => {

@@ -54,6 +54,19 @@ describe("resumes", () => {
     expect(JSON.stringify(item)).not.toContain("AAAA");
   });
 
+  it("keeps the job posting with the resume and its copy, but not in the list", async () => {
+    const agent = await signedInAgent(await makeApp());
+    const posting = "Backend Engineer\nRequirements: Go, PostgreSQL";
+    const { id } = (await agent.post("/api/resumes").send(sampleResume({ jobPosting: posting })).expect(201)).body.resume;
+    expect((await agent.get(`/api/resumes/${id}`).expect(200)).body.resume.data.jobPosting).toBe(posting);
+    expect((await agent.post(`/api/resumes/${id}/duplicate`).expect(201)).body.resume.data.jobPosting).toBe(posting);
+    expect(JSON.stringify((await agent.get("/api/resumes").expect(200)).body)).not.toContain("PostgreSQL");
+
+    await agent.post("/api/resumes").send(sampleResume({ jobPosting: "x".repeat(20_001) })).expect(400);
+    const blank = await agent.post("/api/resumes").send({ title: "t", data: {} }).expect(201);
+    expect(blank.body.resume.data.jobPosting).toBe("");
+  });
+
   it("fills defaults and strips unknown fields", async () => {
     const agent = await signedInAgent(await makeApp());
     const res = await agent.post("/api/resumes").send({ title: "t", data: { hacker: "x" } }).expect(201);

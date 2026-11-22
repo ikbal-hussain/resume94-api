@@ -196,16 +196,39 @@ Imports are limited to **5 per 10 minutes per user**, separately from the other 
 routes. One import costs roughly what twenty summaries cost, and it is something people
 do once and then not again for weeks.
 
+### Tailoring a bullet for a job
+
+Matching a resume to a job posting happens entirely in the browser: the posting's skills
+come from a built-in list, so reading it costs nothing and sends nothing. The API's part
+is small. It stores the posting on the resume (`data.jobPosting`, up to 20,000
+characters, left out of the list projection like the photo), and `POST /api/ai/tailor`
+rewrites one Experience or Projects bullet for that job, for 1 credit.
+
+A tailoring prompt is where a model is most tempted to make things up: asked to make a
+bullet fit, it adds the tools the job wants and a percentage to go with them. A resume
+that claims something untrue is worse than one that matches less, so the safeguards are
+about what the rewrite must not add:
+
+- **Only skills the person already claims are offered.** The browser sends the posting's
+  skills that the resume shows somewhere; a skill the person has not listed never reaches
+  the prompt, so a rewrite cannot slip it in.
+- **The prompt forbids new facts**: no numbers, tools, team sizes, outcomes or
+  responsibilities the original does not state, and a listed skill only where the
+  bullet's own work used it.
+- **The person decides.** The app shows the rewrite next to the original and changes
+  nothing until it is kept.
+
 ### Protecting the AI budget
 
 Four layers, weakest to strongest:
 
-1. **Authentication** — both endpoints are behind `requireAuth`. There is no anonymous
+1. **Authentication** — every AI endpoint is behind `requireAuth`. There is no anonymous
    access, so there is no way to spend the key without an account.
 2. **Per-user rate limit** — 10 requests/minute, keyed on `user:<id>` rather than IP,
    so one account cannot get extra capacity by changing networks.
 3. **Input caps in Zod** — `role` ≤ 100 chars, `experience` ≤ 50, `keySkills` ≤ 500,
-   `improve.content` ≤ 2000. Cost scales with tokens, so bounding input bounds spend.
+   `improve.content` ≤ 2000, `tailor.content` ≤ 500 with at most 15 skills. Cost scales
+   with tokens, so bounding input bounds spend.
    A 2 MB body cannot reach the model.
 4. **Body size cap** — `express.json({ limit: "2mb" })`, which returns 413.
 
@@ -342,7 +365,7 @@ account no longer comes with a fresh daily AI allowance.
 
 ```
 users           { _id, name, email (unique index), passwordHash, googleId, avatarUrl, emailVerifiedAt, createdAt }
-resumes         { _id, userId, title, templateId, accent, sections…, updatedAt }
+resumes         { _id, userId, title, data: { sections…, jobPosting }, updatedAt }
 passwordResets  { _id, userId, tokenHash, expiresAt, usedAt }
 emailVerifications { _id, userId, tokenHash, expiresAt, usedAt }
 ```
