@@ -96,7 +96,7 @@ failure. Match that. A comment restating the line below it is noise; delete it.
   wrapper that ignores it silently turns fail-closed back into fail-open while the
   options still say otherwise.
 - **Every AI route is charged against a daily allowance** (`src/services/aiQuota.js`):
-  `AI_DAILY_CREDITS_PER_USER` credits per account (summary/improve 1, import 5) and
+  `AI_DAILY_CREDITS_PER_USER` credits per account (summary/improve/tailor 1, import 5) and
   `AI_DAILY_TOKENS_GLOBAL` tokens for the whole app, counted from the provider's reported
   usage. A new AI route goes through `charged(kind, call)` in `routes/ai.js` and needs a
   cost in `AI_COSTS` and a token estimate in `TOKEN_ESTIMATES`; it must pass `onTokens`

@@ -210,8 +210,13 @@ that claims something untrue is worse than one that matches less, so the safegua
 about what the rewrite must not add:
 
 - **Only skills the person already claims are offered.** The browser sends the posting's
-  skills that the resume shows somewhere; a skill the person has not listed never reaches
-  the prompt, so a rewrite cannot slip it in.
+  skills that the resume shows somewhere, so the app never puts a skill the person has not
+  listed in front of the model. The API trusts that list (the resume being edited may not
+  be saved yet, so there is nothing to check it against); a caller who sends other skills
+  only changes the text of their own bullet, which they still have to keep.
+- **Every user-supplied part is fenced.** The job title and skills go in a fenced data
+  block like the bullet, with newlines flattened by the schema, so neither can add a rule
+  of its own.
 - **The prompt forbids new facts**: no numbers, tools, team sizes, outcomes or
   responsibilities the original does not state, and a listed skill only where the
   bullet's own work used it.

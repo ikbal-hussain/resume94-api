@@ -588,9 +588,11 @@ export function buildOpenApiDocument() {
           summary: "Rewrite one bullet for a job posting",
           description:
             "Rewrites an Experience or Projects bullet so it reads as relevant to the job, keeping every " +
-            "fact as stated. `skills` are the posting's skills the resume already shows; the model may " +
-            "name one only where the bullet's work used it, and is told not to add numbers, tools or " +
-            "outcomes. Matching the posting itself happens in the browser and costs nothing. Costs " +
+            "fact as stated. `skills` should be the posting's skills that the resume already shows (the " +
+            "app sends only those; the API trusts the list). The model may name one only where the " +
+            "bullet's work used it, and is told not to add numbers, tools or outcomes. The job title and " +
+            "skills are fenced as data like the bullet, with newlines flattened. Matching the posting " +
+            "itself happens in the browser and costs nothing. Costs " +
             "**1 credit**, refunded if no reply was produced (provider error or timeout).",
           security: auth,
           requestBody: { required: true, ...json(ref("TailorRequest")) },

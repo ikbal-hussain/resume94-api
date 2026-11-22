@@ -268,16 +268,25 @@ export const improveRequestSchema = z.object({
   content: z.string().trim().min(1).max(2000),
 });
 
+/** One line of text: newlines and tabs become spaces, so it cannot start a new prompt line. */
+const oneLine = (max) =>
+  z
+    .string()
+    .max(max)
+    .transform((s) => s.replace(/[\r\n\t\u2028\u2029]+/g, " ").trim());
+
 /**
  * One bullet to rewrite for a job posting.
  *
- * `skills` are the posting's skills that the resume already shows somewhere, which the
- * browser works out; the model may name one only where the bullet's own work used it.
- * Skills the person has not claimed are never sent, so a rewrite cannot slip them in.
+ * `skills` are the posting's skills that the resume already shows somewhere. The browser
+ * works that out and sends only those, so the app never offers the model a skill the
+ * person has not claimed. The API cannot check it (the resume being edited may not be
+ * saved yet) and trusts the list; a caller who sends other skills only changes the text
+ * of their own bullet, which they still have to choose to keep.
  */
 export const tailorRequestSchema = z.object({
   section: z.enum(["experience", "projects"]),
   content: z.string().trim().min(1).max(500),
-  jobTitle: z.string().trim().max(120).default(""),
-  skills: z.array(z.string().trim().min(1).max(60)).max(15).default([]),
+  jobTitle: oneLine(120).default(""),
+  skills: z.array(oneLine(60).pipe(z.string().min(1))).max(15).default([]),
 });
