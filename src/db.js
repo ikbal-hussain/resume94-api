@@ -5,6 +5,7 @@ export async function connectDb(uri, dbName) {
   await client.connect();
   const db = client.db(dbName);
   await ensureIndexes(db);
+  await backfillEmailVerified(db);
   return { client, db };
 }
 
@@ -69,6 +70,20 @@ export function makeWithTransaction(client, log = console) {
   };
 }
 
+/**
+ * Accounts with a Google identity proved their address when it was attached: the API has
+ * always refused Google tokens whose email Google had not verified. Those made before
+ * `emailVerifiedAt` existed get it here, so they keep AI without a link. Idempotent and
+ * cheap once done (it matches nothing), so it runs with the index setup on cold start.
+ */
+export async function backfillEmailVerified(db) {
+  await db
+    .collection("users")
+    .updateMany({ googleId: { $type: "string" }, emailVerifiedAt: { $exists: false } }, [
+      { $set: { emailVerifiedAt: "$$NOW" } },
+    ]);
+}
+
 // Idempotent; safe to run on every cold start.
 export async function ensureIndexes(db) {
   await db.collection("users").createIndex({ email: 1 }, { unique: true });
@@ -83,4 +98,6 @@ export async function ensureIndexes(db) {
   // expireAfterSeconds: 0 means "delete once expiresAt passes" — Mongo clears spent
   // reset tokens itself. Lookups still filter on expiresAt; this is only housekeeping.
   await db.collection("passwordResets").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection("emailVerifications").createIndex({ tokenHash: 1 });
+  await db.collection("emailVerifications").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 }

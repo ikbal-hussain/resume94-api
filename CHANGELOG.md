@@ -8,6 +8,15 @@ Every entry below corresponds to work that actually reached `main`.
 
 ## [Unreleased]
 
+### Added
+- **Email verification (RESUME-3).** Sign-up emails a confirmation link. AI routes answer
+  403 `EMAIL_UNVERIFIED` until the address is verified; everything else works straight
+  away. New `POST /auth/verify-email` (no session needed) and
+  `POST /auth/verify-email/resend` (signed in, 5 an hour). A completed password reset or a
+  Google sign-in also verifies the address. Users carry `emailVerified`. Links last
+  `VERIFY_TOKEN_TTL_HOURS` (48). Accounts that already exist are not grandfathered.
+  Reset and verification tokens now share `repositories/oneTimeTokens.js`.
+
 ### Fixed
 - **A Redis outage no longer takes AI down.** Upstash deleted the idle free database in
   November 2026 and every AI route answered 503 for every user, while `/api/health` still

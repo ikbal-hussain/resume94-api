@@ -28,6 +28,10 @@ const schema = z.object({
   RESEND_API_KEY: z.string().optional(),
   MAIL_FROM: z.string().default("Resume94 <onboarding@resend.dev>"),
   RESET_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  // Verification links get longer than reset links: they unlock less (AI only, never the
+  // account), and people often open the email hours after signing up.
+  VERIFY_TOKEN_TTL_HOURS: z.coerce.number().int().positive().default(48),
+  VERIFY_MAILS_PER_HOUR_PER_IP: z.coerce.number().int().positive().default(20),
   // Shared store for rate-limit counters. Both unset means the limiters fall back to
   // an in-process store, which on serverless counts per instance — correct for local
   // work and the tests, wrong in production. /api/health reports which one is live.

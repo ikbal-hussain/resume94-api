@@ -16,6 +16,7 @@ async function setup(configOverrides = {}) {
   const mailer = fakeMailer();
   const app = await makeApp(configOverrides, { mail: mailer });
   await request(app).post("/api/auth/register").send({ name: "Ada", email: EMAIL, password: "password123" });
+  mailer.sent.length = 0; // sign-up's verification email; these tests count reset mail only
   const requestReset = async (email = EMAIL) => {
     const res = await request(app).post("/api/auth/forgot-password").send({ email });
     return { res, token: mailer.sent.length ? tokenFrom(mailer.sent.at(-1)) : null };

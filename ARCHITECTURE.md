@@ -11,9 +11,9 @@ Browser (React SPA, resume94.ikbalhussain.com)
    │  /api/*  — same-origin, rewritten by Netlify with status 200
    ▼
 resume94-api  (Express 5, one Vercel serverless function)
-   ├──► MongoDB Atlas          users, resumes, passwordResets
+   ├──► MongoDB Atlas          users, resumes, passwordResets, emailVerifications
    ├──► Groq  or  Gemini       AI text generation, server-side only
-   └──► Resend                 password-reset email
+   └──► Resend                 password-reset and email-verification mail
 ```
 
 The browser never calls this API cross-origin. The frontend host rewrites `/api/*`
@@ -248,8 +248,8 @@ requests and 200,000 tokens a day for the whole app on Groq's free tier.
 - **Per app:** `AI_DAILY_TOKENS_GLOBAL` tokens a day (default 180,000), counted from the
   `usage` each provider reports — reasoning tokens included — or estimated at four
   characters a token when it reports none. Over it: 503 `AI_BUDGET_EXHAUSTED` for
-  everyone. This is also the backstop for accounts multiplied to get more credits, since
-  registration has no email verification yet.
+  everyone. This is also the backstop for accounts multiplied to get more credits; email
+  verification (below) makes each extra account cost a working inbox.
 - **Reserve, settle, and refund only what produced nothing.** One Lua script checks both
   limits, spends the credits and reserves an estimate of the call's tokens
   (`TOKEN_ESTIMATES`) atomically, so simultaneous requests can neither both take the last
@@ -288,6 +288,34 @@ requests and 200,000 tokens a day for the whole app on Groq's free tier.
    (`expireAfterSeconds: 0`). Lookups still filter on `expiresAt` — the index is
    housekeeping, not the security boundary, because TTL deletion runs on a delay.
 
+## Email verification
+
+AI is gated on a verified address; nothing else is (RESUME-3). An account works the
+moment it is created, so a free tool costs no sign-up friction, but each throwaway
+account no longer comes with a fresh daily AI allowance.
+
+1. `POST /auth/register` emails a link to `/verify-email?token=…`. A failed send is
+   logged and the sign-up still succeeds; the app's banner can send another
+   (`POST /auth/verify-email/resend`, signed in, 5 an hour per account). One IP gets 20
+   verification emails an hour across both (`VERIFY_MAILS_PER_HOUR_PER_IP`), so a
+   script registering made-up addresses cannot spend the provider quota that reset mail
+   shares; past it, sign-ups still succeed without the email. The provider call times
+   out after 8 seconds, so a stalled provider cannot hold a sign-up.
+2. Tokens use the same machinery as reset links (`repositories/oneTimeTokens.js`):
+   32 random bytes, only the SHA-256 stored, single use, expiry in the query. They live
+   in their own collection, so a reset link can never verify an address or the reverse.
+   They last `VERIFY_TOKEN_TTL_HOURS` (48): they unlock less than a reset link does, and
+   people open the email hours later.
+3. `POST /auth/verify-email` needs no session and starts none, because the link may be
+   opened on another device and verifying is not a way to sign in.
+4. Other proof of the inbox counts too: a completed password reset, and a Google
+   sign-in (Google tokens with unverified emails are already refused). Accounts that had
+   a Google identity before verification existed are backfilled on cold start
+   (`backfillEmailVerified`) and again on their next Google sign-in.
+5. `users.emailVerifiedAt` stores the first proof; the API exposes `emailVerified`.
+   AI routes answer 403 `EMAIL_UNVERIFIED` before any limiter runs, so a refused call
+   spends nothing. `/ai/usage` stays open for the meter.
+
 ## Defence in depth — the whole list
 
 | Concern | Measure |
@@ -304,6 +332,7 @@ requests and 200,000 tokens a day for the whole app on Groq's free tier.
 | Horizontal privilege escalation | `userId` in every query; 404 not 403 |
 | Account enumeration | Identical response from forgot-password |
 | Reset-token leak | Only the hash is stored; single use; TTL |
+| Accounts minted for AI credits | AI needs a verified email address |
 | Timing attack on docs auth | `timingSafeEqual` |
 | Reconnaissance | API docs 404 in production unless credentials are set |
 | Misconfiguration | `NODE_ENV` defaults to `production` — fails closed |
@@ -312,9 +341,10 @@ requests and 200,000 tokens a day for the whole app on Groq's free tier.
 ## Data model
 
 ```
-users           { _id, name, email (unique index), passwordHash, createdAt }
+users           { _id, name, email (unique index), passwordHash, googleId, avatarUrl, emailVerifiedAt, createdAt }
 resumes         { _id, userId, title, templateId, accent, sections…, updatedAt }
 passwordResets  { _id, userId, tokenHash, expiresAt, usedAt }
+emailVerifications { _id, userId, tokenHash, expiresAt, usedAt }
 ```
 
 Indexes (`ensureIndexes`, idempotent, run on every cold start):
@@ -323,6 +353,7 @@ Indexes (`ensureIndexes`, idempotent, run on every cold start):
 - `resumes { userId: 1, updatedAt: -1 }` — matches the dashboard's exact query
 - `passwordResets.tokenHash` — the lookup path
 - `passwordResets.expiresAt` TTL — housekeeping
+- `emailVerifications.tokenHash` and `.expiresAt` TTL — the same pair
 
 **Legacy migration on read** (`migrateResume.js`). The original version stored each
 section as free text; the current one stores structured roles, dates and bullets.
@@ -345,14 +376,19 @@ advertise that the route exists at all.
 
 These are real and stated deliberately — each has a tracked fix.
 
-1. **The daily AI allowance can be multiplied with more accounts**, because registration
-   has no email verification. The app-wide token budget caps the damage — the worst case
-   is AI resting until tomorrow — but it is shared, so one person with many accounts can
-   still spend everyone's day.
-2. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
+1. **The daily AI allowance can still be multiplied with more inboxes.** AI needs a
+   verified address, so each extra account now costs a working email, which disposable
+   inbox services make cheap. The app-wide token budget caps the damage — the worst case
+   is AI resting until tomorrow — but it is shared.
+2. **Someone else can verify an account made with your address.** If a person signs up
+   with your address, the email comes to you, and clicking it verifies their account.
+   The email says to ignore it if you did not sign up; the reset flow still lets the
+   real owner take the address back. A confirmation step on the verify page would close
+   it, at the cost of a second click for everyone.
+3. **JWTs cannot be revoked before expiry** in the general case. Mitigated by reloading
    the user on every request, which covers deletion; the full answer is short-lived
    access tokens plus rotating refresh tokens.
-3. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
+4. **The function runs in `iad1` (Washington DC) while Atlas is in `ap-south-1`
    (Mumbai)**, costing roughly 200 ms per database round trip. Measured, not guessed.
    `"regions": ["bom1"]` in `vercel.json` is the obvious fix and **this account cannot
    use it**: a deployment carrying it fails before the build starts, with a 0ms build
@@ -360,6 +396,6 @@ These are real and stated deliberately — each has a tracked fix.
    feature. Everything the function talks to should therefore be co-located with
    `iad1`, not with Mumbai — which is why the Upstash database is in `us-east-1` even
    though the users and the database are in India.
-4. **Profile photos are base64 inside the resume document.** Object storage would be
+5. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
-5. **No error tracking.** A 500 in production is visible only in Vercel's logs.
+6. **No error tracking.** A 500 in production is visible only in Vercel's logs.
