@@ -407,7 +407,8 @@ set**: without it the SDK is never imported, so tests and local work need nothin
 `/api/health` reports `errorTrackingConfigured`; it is not part of the 503 verdict.
 
 - **What is reported.** The error handler reports 5xx only — a 4xx is the client's
-  mistake. Three 5xx codes the API answers by design are skipped
+  mistake, and so is an unhandled error that carries a 4xx status of its own (a client
+  hanging up mid-upload), even though it still answers 500. Three 5xx codes the API answers by design are skipped
   (`AI_BUDGET_EXHAUSTED`, `AI_UNAVAILABLE`, `GOOGLE_NOT_CONFIGURED`): each would be one
   event per AI request until it cleared, and health already shows them. `api/index.js`
   also reports a failed start (Atlas unreachable), which never reaches the handler.
@@ -425,7 +426,8 @@ set**: without it the SDK is never imported, so tests and local work need nothin
   cookies, query strings, every header but content type, length and user agent, user
   fields other than an id, frame variables, breadcrumb data and `extra`, and replaces
   email addresses in messages — Mongo's duplicate-key error quotes the email.
-- **No tracing.** `tracesSampleRate: 0`. `release` is `VERCEL_GIT_COMMIT_SHA`;
+- **No tracing.** `tracesSampleRate: 0`. Because a rate is set at all, the SDK adds its
+  own span-streaming integration next to the eight; at 0 nothing is sampled or sent. `release` is `VERCEL_GIT_COMMIT_SHA`;
   `environment` is `VERCEL_ENV` (production / preview), else `NODE_ENV`.
 
 ## Known limitations

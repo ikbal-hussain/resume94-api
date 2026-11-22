@@ -67,6 +67,10 @@ function appThatThrows(errors) {
   app.get("/missing", () => {
     throw new HttpError(404, "Resume not found", "NOT_FOUND");
   });
+  app.get("/aborted", () => {
+    // What body-parser raises when the client hangs up mid-upload: not an HttpError.
+    throw Object.assign(new Error("request aborted"), { status: 400, type: "request.aborted" });
+  });
   app.post("/invalid", express.json(), () => {
     throw new HttpError(400, "Invalid request", "VALIDATION_ERROR");
   });
@@ -98,6 +102,7 @@ describe("error tracking: what reaches it", () => {
     await request(app).get("/missing").expect(404);
     await request(app).post("/invalid").send({ name: "Ada" }).expect(400);
     await request(app).post("/invalid").set("Content-Type", "application/json").send("{not json").expect(400);
+    await request(app).get("/aborted"); // answered 500 as before, but not reported
     expect(errors.captured).toEqual([]);
   });
 
@@ -166,9 +171,11 @@ describe("error tracking: the Sentry client", () => {
     const options = sdk.inits[0];
     expect(options).toMatchObject({ dsn: DSN, environment: "preview", release: "abc123", tracesSampleRate: 0, defaultIntegrations: false });
     // None of the integrations that read requests, console output, outgoing calls or locals.
-    expect(options.integrations.map((i) => i.name)).not.toEqual(
-      expect.arrayContaining(["requestDataIntegration", "consoleIntegration", "httpIntegration", "localVariablesIntegration"])
-    );
+    const names = options.integrations.map((i) => i.name);
+    expect(names).toHaveLength(8);
+    for (const unwanted of ["requestDataIntegration", "consoleIntegration", "httpIntegration", "nativeNodeFetchIntegration", "localVariablesIntegration"]) {
+      expect(names).not.toContain(unwanted);
+    }
     expect(options.dataCollection).toMatchObject({
       userInfo: false, cookies: false, httpHeaders: false, httpBodies: [], urlQueryParams: false, stackFrameVariables: false,
     });

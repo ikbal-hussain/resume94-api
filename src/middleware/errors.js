@@ -86,7 +86,10 @@ export const errorHandler = (log, errors) => async (err, req, res, _next) => {
     return res.status(err.status).json({ error: { code: err.code || "ERROR", message: err.message } });
   }
   log.error(err);
-  await errors?.capture(err, where(req));
+  // Errors from body-parser and friends carry their own 4xx status (a client that hung
+  // up mid-upload is "request.aborted", 400). They still answer 500 here, as before, but
+  // they are the client's doing and would only be noise in error tracking.
+  if (shouldCapture(err, err.status ?? err.statusCode ?? 500)) await errors?.capture(err, where(req));
   res.status(500).json({ error: { code: "INTERNAL", message: "Something went wrong" } });
 };
 
