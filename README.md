@@ -33,7 +33,7 @@ npm test
 ```
 
 ## Deploy (Vercel)
-`api/index.js` is the serverless entry; `vercel.json` rewrites `/api/*` to it. Set env vars `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY` (optional), `CLIENT_ORIGIN`. In MongoDB Atlas allow network access from `0.0.0.0/0` (Vercel has no fixed IPs) and use a least-privilege DB user.
+`api/index.js` is the serverless entry; `vercel.json` rewrites `/api/*` to it. Set env vars `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY` (optional), `CLIENT_ORIGIN`, and `SENTRY_DSN` (optional: error tracking for 5xx, off when unset; see ARCHITECTURE.md → Error tracking). `.env.example` lists the rest. In MongoDB Atlas allow network access from `0.0.0.0/0` (Vercel has no fixed IPs) and use a least-privilege DB user.
 
 The frontend project proxies `/api/*` to this deployment with a Vercel rewrite, so the browser only talks to its own origin and the session cookie stays first-party (works in Safari).
 

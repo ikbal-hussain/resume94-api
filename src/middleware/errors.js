@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import { shouldCapture } from "../services/errorTracking.js";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -59,7 +60,11 @@ export const validateBody = (schema) => (req, _res, next) => {
 
 export const notFound = (_req, _res, next) => next(new HttpError(404, "Route not found", "NOT_FOUND"));
 
-export const errorHandler = (log) => (err, req, res, _next) => {
+// `errors` is the tracker from services/errorTracking.js. Only 5xx reach it: a 4xx is the
+// client's mistake and expected, a 5xx is ours. It is awaited before the response because
+// the serverless function freezes once the response is sent, taking an unsent event with
+// it; the tracker bounds that wait to two seconds and never throws.
+export const errorHandler = (log, errors) => async (err, req, res, _next) => {
   if (err instanceof ZodError) {
     return res.status(400).json({
       error: {
@@ -76,9 +81,20 @@ export const errorHandler = (log) => (err, req, res, _next) => {
     return res.status(400).json({ error: { code: "BAD_JSON", message: "Malformed JSON" } });
   }
   if (err instanceof HttpError) {
+    if (shouldCapture(err, err.status)) await errors?.capture(err, where(req));
     if (err.headers) res.set(err.headers); // e.g. the WWW-Authenticate challenge
     return res.status(err.status).json({ error: { code: err.code || "ERROR", message: err.message } });
   }
   log.error(err);
+  await errors?.capture(err, where(req));
   res.status(500).json({ error: { code: "INTERNAL", message: "Something went wrong" } });
 };
+
+// The path as a pattern: "/api/resumes/:id" groups every resume's failure into one issue,
+// and carries no ids or query strings. Built from the URL because Express has already
+// reset req.baseUrl by the time an app-level error handler runs, so req.route alone
+// would read "/:id" with its mount point gone.
+const OBJECT_ID = /\/[0-9a-f]{24}(?=\/|$)/gi;
+function where(req) {
+  return { method: req.method, route: req.originalUrl.split("?")[0].replace(OBJECT_ID, "/:id") };
+}

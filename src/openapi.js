@@ -164,6 +164,7 @@ export function buildOpenApiDocument() {
       mailConfigured: { type: "boolean" },
       mailProvider: { type: "string", enum: ["console", "resend"] },
       googleConfigured: { type: "boolean" },
+      errorTrackingConfigured: { type: "boolean" },
       rateLimitStoreReachable: {
         type: "boolean",
         nullable: true,

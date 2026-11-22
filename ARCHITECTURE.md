@@ -400,6 +400,34 @@ In production both `/api/docs` and `/api/openapi.json` **report 404** unless
 endpoint list with every field and every limit is free reconnaissance; a 404 does not
 advertise that the route exists at all.
 
+## Error tracking
+
+Sentry (`@sentry/node`, `src/services/errorTracking.js`), **off unless `SENTRY_DSN` is
+set**: without it the SDK is never imported, so tests and local work need nothing.
+`/api/health` reports `errorTrackingConfigured`; it is not part of the 503 verdict.
+
+- **What is reported.** The error handler reports 5xx only — a 4xx is the client's
+  mistake. Three 5xx codes the API answers by design are skipped
+  (`AI_BUDGET_EXHAUSTED`, `AI_UNAVAILABLE`, `GOOGLE_NOT_CONFIGURED`): each would be one
+  event per AI request until it cleared, and health already shows them. `api/index.js`
+  also reports a failed start (Atlas unreachable), which never reaches the handler.
+  Each event is tagged with the method and the path as a pattern (`/api/resumes/:id`).
+- **Serverless flush.** A Vercel function freezes once its response is sent, and an
+  event still queued then is lost. The handler therefore awaits `capture`, which calls
+  `Sentry.flush(2000)`, before it answers — a 500 can be up to two seconds slower, a 4xx
+  never is. `capture` never throws.
+- **Privacy.** Resumes are personal data, so there are three layers. Only eight
+  integrations run (`defaultIntegrations: false`): none of console, http, fetch,
+  request data or local variables, which would carry provider replies, Upstash URLs
+  whose keys hold client IPs, the request, and a resume in scope. `dataCollection`
+  turns every automatic category off (it replaced `sendDefaultPii`, which
+  `@sentry/node` 11 no longer has). `beforeSend` (`scrubEvent`) removes request bodies,
+  cookies, query strings, every header but content type, length and user agent, user
+  fields other than an id, frame variables, breadcrumb data and `extra`, and replaces
+  email addresses in messages — Mongo's duplicate-key error quotes the email.
+- **No tracing.** `tracesSampleRate: 0`. `release` is `VERCEL_GIT_COMMIT_SHA`;
+  `environment` is `VERCEL_ENV` (production / preview), else `NODE_ENV`.
+
 ## Known limitations
 
 These are real and stated deliberately — each has a tracked fix.
@@ -426,4 +454,3 @@ These are real and stated deliberately — each has a tracked fix.
    though the users and the database are in India.
 5. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
-6. **No error tracking.** A 500 in production is visible only in Vercel's logs.
