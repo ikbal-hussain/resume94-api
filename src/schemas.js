@@ -112,6 +112,10 @@ export const resumeDataSchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, "Must be a hex colour like #2563eb")
     .default("#2563eb"),
   sectionOrder: z.array(z.string().max(40)).max(20).default([]),
+
+  // The job posting this resume is tailored for (the job match, RESUME-26). Never
+  // rendered into the resume. 20k characters is a long posting several times over.
+  jobPosting: z.string().max(20_000).default(""),
 });
 
 export const resumeBodySchema = z.object({
@@ -262,4 +266,27 @@ export const summaryRequestSchema = z.object({
 export const improveRequestSchema = z.object({
   section: z.enum(["projects", "education", "experience", "certifications"]),
   content: z.string().trim().min(1).max(2000),
+});
+
+/** One line of text: newlines and tabs become spaces, so it cannot start a new prompt line. */
+const oneLine = (max) =>
+  z
+    .string()
+    .max(max)
+    .transform((s) => s.replace(/[\r\n\t\u2028\u2029]+/g, " ").trim());
+
+/**
+ * One bullet to rewrite for a job posting.
+ *
+ * `skills` are the posting's skills that the resume already shows somewhere. The browser
+ * works that out and sends only those, so the app never offers the model a skill the
+ * person has not claimed. The API cannot check it (the resume being edited may not be
+ * saved yet) and trusts the list; a caller who sends other skills only changes the text
+ * of their own bullet, which they still have to choose to keep.
+ */
+export const tailorRequestSchema = z.object({
+  section: z.enum(["experience", "projects"]),
+  content: z.string().trim().min(1).max(500),
+  jobTitle: oneLine(120).default(""),
+  skills: z.array(oneLine(60).pipe(z.string().min(1))).max(15).default([]),
 });

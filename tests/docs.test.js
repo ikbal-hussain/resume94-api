@@ -38,6 +38,7 @@ describe("API documentation", () => {
       "/ai/usage",
       "/ai/summary",
       "/ai/improve",
+      "/ai/tailor",
     ]) {
       expect(documented, `missing ${path}`).toContain(path);
     }

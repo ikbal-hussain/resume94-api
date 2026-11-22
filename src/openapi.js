@@ -8,6 +8,7 @@ import {
   resumeDataSchema,
   summaryRequestSchema,
   improveRequestSchema,
+  tailorRequestSchema,
   importResumeSchema,
   parsedResumeSchema,
   forgotPasswordSchema,
@@ -222,6 +223,7 @@ export function buildOpenApiDocument() {
         UpdateProfileBody: toSchema(updateProfileSchema),
         SummaryRequest: toSchema(summaryRequestSchema),
         ImproveRequest: toSchema(improveRequestSchema),
+        TailorRequest: toSchema(tailorRequestSchema),
         ImportRequest: toSchema(importResumeSchema),
         // Content fields only. Deliberately NOT ResumeData: the import never returns
         // templateId, accentColor, sectionOrder or profileImage, because those are
@@ -573,6 +575,30 @@ export function buildOpenApiDocument() {
           responses: {
             403: error("The account has not verified its email address (EMAIL_UNVERIFIED)"),
             200: { description: "Rewritten text", ...json({ type: "object", properties: { text: { type: "string" }, usage: aiUsage } }) },
+            400: validation,
+            401: unauthorized,
+            502: error("The provider rejected the request"),
+            ...quotaErrors,
+          },
+        },
+      },
+      "/ai/tailor": {
+        post: {
+          tags: ["AI"],
+          summary: "Rewrite one bullet for a job posting",
+          description:
+            "Rewrites an Experience or Projects bullet so it reads as relevant to the job, keeping every " +
+            "fact as stated. `skills` should be the posting's skills that the resume already shows (the " +
+            "app sends only those; the API trusts the list). The model may name one only where the " +
+            "bullet's work used it, and is told not to add numbers, tools or outcomes. The job title and " +
+            "skills are fenced as data like the bullet, with newlines flattened. Matching the posting " +
+            "itself happens in the browser and costs nothing. Costs " +
+            "**1 credit**, refunded if no reply was produced (provider error or timeout).",
+          security: auth,
+          requestBody: { required: true, ...json(ref("TailorRequest")) },
+          responses: {
+            403: error("The account has not verified its email address (EMAIL_UNVERIFIED)"),
+            200: { description: "Rewritten bullet", ...json({ type: "object", properties: { text: { type: "string" }, usage: aiUsage } }) },
             400: validation,
             401: unauthorized,
             502: error("The provider rejected the request"),

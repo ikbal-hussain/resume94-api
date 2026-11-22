@@ -2,7 +2,7 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { validateBody, HttpError } from "../middleware/errors.js";
 import { failClosed } from "../middleware/rateLimit.js";
-import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "../schemas.js";
+import { summaryRequestSchema, improveRequestSchema, tailorRequestSchema, importResumeSchema } from "../schemas.js";
 import { AI_COSTS, TOKEN_ESTIMATES } from "../services/aiQuota.js";
 
 // What happens when the shared counter cannot be reached is a setting, because the right
@@ -111,6 +111,11 @@ export function aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing
     "/improve",
     validateBody(improveRequestSchema),
     charged("improve", async (body, opts) => ({ text: await ai.improve(body, opts) }))
+  );
+  r.post(
+    "/tailor",
+    validateBody(tailorRequestSchema),
+    charged("tailor", async (body, opts) => ({ text: await ai.tailor(body, opts) }))
   );
 
   // An import sends a whole resume and asks for a whole resume back, so one call costs

@@ -21,7 +21,7 @@ Errors are `{ "error": { "code", "message", "details?" } }`.
 | `GET /resumes` · `POST /resumes` | List summaries · create |
 | `GET/PUT/DELETE /resumes/:id` | Read / replace / delete |
 | `POST /resumes/:id/duplicate` | Copy |
-| `POST /ai/summary` · `POST /ai/improve` | AI text generation |
+| `POST /ai/summary` · `POST /ai/improve` · `POST /ai/tailor` | AI text generation |
 | `GET /health` | Liveness + DB ping |
 
 ## Run locally

@@ -8,6 +8,7 @@ import { ensureIndexes } from "../src/db.js";
 export const fakeAi = {
   summary: async () => "A great summary.",
   improve: async ({ content }) => `- improved: ${content}`,
+  tailor: async ({ content, jobTitle }) => `- tailored for ${jobTitle}: ${content}`,
   parseResume: async () => ({ name: "Ada Lovelace", experience: [{ company: "Analytical Engines Ltd" }] }),
 };
 

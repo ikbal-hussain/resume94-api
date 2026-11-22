@@ -9,6 +9,12 @@ Every entry below corresponds to work that actually reached `main`.
 ## [Unreleased]
 
 ### Added
+- **Job match (RESUME-26).** Resumes can carry `jobPosting` (up to 20,000 characters):
+  the job they are tailored for. It is saved and copied with the resume, and left out of
+  the list. New `POST /ai/tailor` rewrites one Experience or Projects bullet for that job
+  (1 credit, confirmed email only, the same limits as `/ai/improve`). The browser sends
+  only skills the resume already shows, and the prompt forbids adding numbers, tools or
+  outcomes. The matching itself happens in the browser and never reaches the API.
 - **Email verification (RESUME-3).** Sign-up emails a confirmation link. AI routes answer
   403 `EMAIL_UNVERIFIED` until the address is verified; everything else works straight
   away. New `POST /auth/verify-email` (no session needed) and

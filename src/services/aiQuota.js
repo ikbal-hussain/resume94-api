@@ -4,7 +4,7 @@ import { HttpError } from "../middleware/errors.js";
  * What each AI route costs, in credits. Roughly proportional to tokens: an import sends
  * a whole resume and asks for a whole resume back, which is about five summaries' worth.
  */
-export const AI_COSTS = { summary: 1, improve: 1, import: 5 };
+export const AI_COSTS = { summary: 1, improve: 1, tailor: 1, import: 5 };
 
 /**
  * What each AI route is expected to cost in tokens, reserved from the app's daily budget
@@ -13,7 +13,7 @@ export const AI_COSTS = { summary: 1, improve: 1, import: 5 };
  * and overshooting it together. Generous on purpose: an over-estimate only holds tokens
  * for the seconds a call takes; an under-estimate lets the budget be overrun.
  */
-export const TOKEN_ESTIMATES = { summary: 1500, improve: 1000, import: 5000 };
+export const TOKEN_ESTIMATES = { summary: 1500, improve: 1000, tailor: 1200, import: 5000 };
 const SMALLEST_ESTIMATE = Math.min(...Object.values(TOKEN_ESTIMATES));
 
 const DAY_SECONDS = 24 * 60 * 60;
