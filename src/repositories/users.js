@@ -12,6 +12,9 @@ const toUser = (d) =>
     // itself, and it is derived rather than stored so the two can never disagree.
     hasPassword: Boolean(d.passwordHash),
     hasGoogle: Boolean(d.googleId),
+    // Whether the account has proved it owns its address: a verification link, a
+    // completed password reset, or a Google sign-in Google had verified. AI is gated on it.
+    emailVerified: Boolean(d.emailVerifiedAt),
   };
 const oid = (id) => (ObjectId.isValid(id) ? new ObjectId(id) : null);
 
@@ -21,8 +24,8 @@ export function usersRepo(db) {
     // Emails are lowercased by the schema; the unique index enforces one account per email.
     // `passwordHash` is optional: an account created through Google has no password, and
     // storing `undefined` would leave a key whose value bcrypt would later compare against.
-    async create({ name, email, passwordHash = null, googleId = null, avatarUrl = null }) {
-      const doc = { name, email, passwordHash, googleId, avatarUrl, createdAt: new Date() };
+    async create({ name, email, passwordHash = null, googleId = null, avatarUrl = null, emailVerifiedAt = null }) {
+      const doc = { name, email, passwordHash, googleId, avatarUrl, emailVerifiedAt, createdAt: new Date() };
       try {
         const { insertedId } = await col.insertOne(doc);
         return toUser({ ...doc, _id: insertedId });
@@ -57,7 +60,9 @@ export function usersRepo(db) {
       const _id = id instanceof ObjectId ? id : oid(id);
       const d = await col.findOneAndUpdate(
         { _id, $or: [{ googleId: null }, { googleId }, { googleId: { $exists: false } }] },
-        [{ $set: { googleId, avatarUrl: { $ifNull: ["$avatarUrl", avatarUrl] } } }],
+        // Linking only happens for an address Google has verified, which is proof of
+        // ownership in its own right; an earlier verification date is kept.
+        [{ $set: { googleId, avatarUrl: { $ifNull: ["$avatarUrl", avatarUrl] }, emailVerifiedAt: { $ifNull: ["$emailVerifiedAt", "$$NOW"] } } }],
         { returnDocument: "after" }
       );
       return d ? toUser(d) : null;
@@ -67,6 +72,16 @@ export function usersRepo(db) {
     async updatePasswordHash(id, passwordHash, session) {
       const _id = id instanceof ObjectId ? id : oid(id);
       const { matchedCount } = await col.updateOne({ _id }, { $set: { passwordHash } }, { session });
+      return matchedCount > 0;
+    },
+    /** Records proof of address ownership. Keeps the first date if already verified. */
+    async markEmailVerified(id, session) {
+      const _id = id instanceof ObjectId ? id : oid(id);
+      const { matchedCount } = await col.updateOne(
+        { _id },
+        [{ $set: { emailVerifiedAt: { $ifNull: ["$emailVerifiedAt", "$$NOW"] } } }],
+        { session }
+      );
       return matchedCount > 0;
     },
     async updateName(id, name) {
@@ -81,6 +96,7 @@ export function usersRepo(db) {
         // account and hit a user lookup that no longer resolves.
         await db.collection("resumes").deleteMany({ userId: _id });
         await db.collection("passwordResets").deleteMany({ userId: _id });
+        await db.collection("emailVerifications").deleteMany({ userId: _id });
       }
       return deletedCount > 0;
     },

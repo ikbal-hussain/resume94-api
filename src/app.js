@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import { usersRepo } from "./repositories/users.js";
 import { resumesRepo } from "./repositories/resumes.js";
 import { passwordResetsRepo } from "./repositories/passwordResets.js";
+import { emailVerificationsRepo } from "./repositories/emailVerifications.js";
 import { createAiService } from "./services/ai/index.js";
 import { createMailService } from "./services/mail/index.js";
 import { createGoogleService } from "./services/google.js";
@@ -45,6 +46,7 @@ export function createApp(config, {
   const testing = config.NODE_ENV === "test";
   const resumes = resumesRepo(db);
   const passwordResets = passwordResetsRepo(db);
+  const emailVerifications = emailVerificationsRepo(db);
   // Without a client (or on a standalone server) this still runs, just not atomically.
   const withTransaction = makeWithTransaction(client, log);
   const requireAuth = makeRequireAuth(config, users);
@@ -130,7 +132,7 @@ export function createApp(config, {
       rateLimitFallbackActive: rateLimits.fallbackActive(),
     });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
+  app.use("/api/auth", authRouter({ config, users, passwordResets, emailVerifications, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
   app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
   app.use("/api/ai", aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
   app.use("/api/cron", cronRouter({ config, rateLimits, log }));

@@ -66,11 +66,13 @@ export async function makeApp(overrides = {}, deps = {}) {
   return app;
 }
 
-// Returns a supertest agent that keeps the session cookie.
-export async function signedInAgent(app, email = "a@example.com") {
+// Returns a supertest agent that keeps the session cookie. Verified by default, so
+// suites about other things can call AI; pass { verified: false } to test the gate.
+export async function signedInAgent(app, email = "a@example.com", { verified = true } = {}) {
   const agent = request.agent(app);
   const res = await agent.post("/api/auth/register").send({ name: "Ada", email, password: "password123" });
   if (res.status !== 201) throw new Error("register failed: " + JSON.stringify(res.body));
+  if (verified) await app.locals.db.collection("users").updateOne({ email }, { $set: { emailVerifiedAt: new Date() } });
   return agent;
 }
 

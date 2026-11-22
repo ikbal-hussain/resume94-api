@@ -173,7 +173,7 @@ describe("accounts with no password", () => {
 
     await request(app).post("/api/auth/forgot-password").send({ email: "ada@example.com" }).expect(204);
 
-    expect(mail.sent[0].subject).toBe("Reset your Resume94 password");
+    expect(mail.sent.at(-1).subject).toBe("Reset your Resume94 password");
     expect(await app.locals.db.collection("passwordResets").countDocuments()).toBe(1);
   });
 });

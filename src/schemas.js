@@ -28,6 +28,10 @@ export const forgotPasswordSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(254),
 });
 
+export const verifyEmailSchema = z.object({
+  token: z.string().trim().min(20).max(200),
+});
+
 export const resetPasswordSchema = z.object({
   token: z.string().trim().min(20).max(200),
   password: z.string().min(8, "Password must be at least 8 characters").max(128),

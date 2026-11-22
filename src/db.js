@@ -83,4 +83,6 @@ export async function ensureIndexes(db) {
   // expireAfterSeconds: 0 means "delete once expiresAt passes" — Mongo clears spent
   // reset tokens itself. Lookups still filter on expiresAt; this is only housekeeping.
   await db.collection("passwordResets").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await db.collection("emailVerifications").createIndex({ tokenHash: 1 });
+  await db.collection("emailVerifications").createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 }

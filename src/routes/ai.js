@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { validateBody } from "../middleware/errors.js";
+import { validateBody, HttpError } from "../middleware/errors.js";
 import { failClosed } from "../middleware/rateLimit.js";
 import { summaryRequestSchema, improveRequestSchema, importResumeSchema } from "../schemas.js";
 import { AI_COSTS, TOKEN_ESTIMATES } from "../services/aiQuota.js";
@@ -74,6 +74,15 @@ export function aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing
     const usage = await aiQuota.settle(receipt, tokens);
     res.json({ ...result, usage });
   };
+  // Every route below spends the shared provider budget, so it needs an account that
+  // has proved it owns its address (RESUME-3): otherwise each throwaway sign-up is a fresh
+  // daily allowance. Checked before the limiters so a refused call spends nothing. The
+  // meter above stays open, since the app shows it either way.
+  r.use((req, _res, next) => {
+    if (req.user.emailVerified) return next();
+    next(new HttpError(403, "Confirm your email address to use AI features", "EMAIL_UNVERIFIED"));
+  });
+
   // Per-user (not per-IP) limit: AI calls cost money.
   r.use(
     failClosed(

@@ -30,6 +30,8 @@ describe("API documentation", () => {
       "/auth/login",
       "/auth/logout",
       "/auth/me",
+      "/auth/verify-email",
+      "/auth/verify-email/resend",
       "/resumes",
       "/resumes/{id}",
       "/resumes/{id}/duplicate",

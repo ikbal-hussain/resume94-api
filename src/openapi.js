@@ -12,6 +12,7 @@ import {
   parsedResumeSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  verifyEmailSchema,
 } from "./schemas.js";
 
 // Request schemas are derived from the same Zod validators the routes enforce, so the
@@ -66,6 +67,10 @@ const userResponse = {
         avatarUrl: { type: "string", nullable: true, description: "From Google, when the account is linked" },
         hasPassword: { type: "boolean", description: "False for an account created through Google" },
         hasGoogle: { type: "boolean" },
+        emailVerified: {
+          type: "boolean",
+          description: "Whether the account has proved it owns its address. AI routes need it.",
+        },
       },
     },
   },
@@ -224,6 +229,7 @@ export function buildOpenApiDocument() {
         ImportedResumeData: toResponseSchema(parsedResumeSchema),
         ForgotPasswordBody: toSchema(forgotPasswordSchema),
         ResetPasswordBody: toSchema(resetPasswordSchema),
+        VerifyEmailBody: toSchema(verifyEmailSchema),
       },
     },
     paths: {
@@ -374,6 +380,36 @@ export function buildOpenApiDocument() {
           },
         },
       },
+      "/auth/verify-email": {
+        post: {
+          tags: ["Auth"],
+          summary: "Confirm an email address using the emailed link",
+          description:
+            "Sent at sign-up and from the app's banner. Consumes the token and every other outstanding " +
+            "verification token for the account. Needs no session and starts none. A completed password " +
+            "reset or a Google sign-in also verifies the address. Links expire after VERIFY_TOKEN_TTL_HOURS (48 by default).",
+          requestBody: { required: true, ...json(ref("VerifyEmailBody")) },
+          responses: {
+            204: { description: "Address verified" },
+            400: error("The link is invalid, already used, or expired (VERIFY_TOKEN_INVALID)"),
+            429: error("Too many attempts"),
+          },
+        },
+      },
+      "/auth/verify-email/resend": {
+        post: {
+          tags: ["Auth"],
+          summary: "Email a new verification link",
+          security: auth,
+          description: "No-op (204) when the address is already verified.",
+          responses: {
+            204: { description: "Sent, or nothing to send" },
+            401: unauthorized,
+            429: error("Too many emails (5 per hour per account)"),
+            503: error("The mail provider refused the message (MAIL_FAILED)"),
+          },
+        },
+      },
       "/auth/logout": {
         post: { tags: ["Auth"], summary: "Clear the session cookie", responses: { 204: { description: "Signed out" } } },
       },
@@ -382,8 +418,8 @@ export function buildOpenApiDocument() {
           tags: ["Auth"],
           summary: "Who is signed in, if anyone",
           description:
-            "For the page-load session check. Always 200: `user` is null when there is no valid session " +
-            "(a stale cookie is cleared). Use `/auth/me` where a session is required.",
+            "For the page-load session check. Always 200: `user` is null when there is no valid session. " +
+            "A stale cookie is left in place, so this check cannot race a sign-in. Use `/auth/me` where a session is required.",
           responses: {
             200: {
               description: "The signed-in user, or null",
@@ -516,6 +552,7 @@ export function buildOpenApiDocument() {
           security: auth,
           requestBody: { required: true, ...json(ref("SummaryRequest")) },
           responses: {
+            403: error("The account has not verified its email address (EMAIL_UNVERIFIED)"),
             200: { description: "Generated text", ...json({ type: "object", properties: { text: { type: "string" }, usage: aiUsage } }) },
             400: validation,
             401: unauthorized,
@@ -534,6 +571,7 @@ export function buildOpenApiDocument() {
           security: auth,
           requestBody: { required: true, ...json(ref("ImproveRequest")) },
           responses: {
+            403: error("The account has not verified its email address (EMAIL_UNVERIFIED)"),
             200: { description: "Rewritten text", ...json({ type: "object", properties: { text: { type: "string" }, usage: aiUsage } }) },
             400: validation,
             401: unauthorized,
@@ -561,6 +599,7 @@ export function buildOpenApiDocument() {
           security: auth,
           requestBody: { required: true, ...json(ref("ImportRequest")) },
           responses: {
+            403: error("The account has not verified its email address (EMAIL_UNVERIFIED)"),
             200: {
               description: "The extracted resume content",
               ...json({ type: "object", properties: { data: ref("ImportedResumeData"), usage: aiUsage } }),
