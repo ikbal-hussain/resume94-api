@@ -36,9 +36,28 @@ const disabled = Object.freeze({
  * `load` is injectable so a test can hand in a fake SDK and inspect what init receives,
  * without a network or a real DSN.
  */
-export function createErrorTracker(config, { log = console, load = () => import("@sentry/node") } = {}) {
+export function createErrorTracker(
+  config,
+  { log = console, load = () => import("@sentry/node"), timeoutMs = FLUSH_TIMEOUT_MS } = {}
+) {
   const dsn = config.SENTRY_DSN?.trim();
   if (!dsn) return disabled;
+
+  // One deadline for the whole report: loading the SDK the first time, initialising it,
+  // capturing and flushing. Timing only the flush let a slow first import add to it.
+  const withinDeadline = async (work) => {
+    let timer;
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+      timer.unref?.();
+    });
+    const started = Date.now();
+    try {
+      await Promise.race([work(() => Math.max(0, timeoutMs - (Date.now() - started))), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   const ready = load()
     .then((Sentry) => {
@@ -53,22 +72,23 @@ export function createErrorTracker(config, { log = console, load = () => import(
 
   return {
     configured: true,
-    // Never throws and never takes much longer than FLUSH_TIMEOUT_MS: it runs on the way
-    // to a 500, and a broken tracker must not turn that into a hung request.
+    // Never throws and never takes longer than the deadline: it runs on the way to a 500,
+    // and a broken or slow tracker must not turn that into a hung request.
     async capture(err, { method, route } = {}) {
       try {
-        const Sentry = await ready;
-        if (!Sentry) return;
-        Sentry.captureException(err, { tags: { method, route } });
-        await Sentry.flush(FLUSH_TIMEOUT_MS);
+        await withinDeadline(async (remaining) => {
+          const Sentry = await ready;
+          if (!Sentry) return;
+          Sentry.captureException(err, { tags: { method, route } });
+          await Sentry.flush(remaining());
+        });
       } catch (trackingErr) {
         log.error("[errors] could not report an error", trackingErr);
       }
     },
     async flush() {
       try {
-        const Sentry = await ready;
-        await Sentry?.flush(FLUSH_TIMEOUT_MS);
+        await withinDeadline(async (remaining) => (await ready)?.flush(remaining()));
       } catch {
         // Nothing useful to do; the original error has already been logged.
       }
@@ -111,6 +131,10 @@ function sentryOptions(config, dsn, Sentry) {
 
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const redactEmails = (text) => (typeof text === "string" ? text.replace(EMAIL, "[email]") : text);
+// A run long enough to be a reset or verification token (they are 64 hex characters),
+// a JWT segment or an id. Route patterns and words are far shorter.
+const TOKEN = /[A-Za-z0-9_-]{20,}/g;
+const redactTokens = (text) => (typeof text === "string" ? text.replace(TOKEN, "[token]") : text);
 // Enough to tell a browser from a script; nothing that identifies or authenticates.
 const KEPT_HEADERS = new Set(["content-type", "content-length", "user-agent"]);
 
@@ -130,6 +154,11 @@ export function scrubEvent(event) {
         Object.entries(headers).filter(([name]) => KEPT_HEADERS.has(name.toLowerCase()))
       );
     }
+  }
+  // Tags are ours (method and route pattern), but a fallback path or a future tag could
+  // still carry an email or a token, so they get the same treatment as free text.
+  if (event.tags) {
+    for (const [name, value] of Object.entries(event.tags)) event.tags[name] = redactTokens(redactEmails(value));
   }
   if (event.user) event.user = event.user.id === undefined ? undefined : { id: event.user.id };
   event.message = redactEmails(event.message);

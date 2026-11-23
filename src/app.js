@@ -14,7 +14,7 @@ import { createRateLimitService } from "./services/rateLimit/index.js";
 import { createAiQuota } from "./services/aiQuota.js";
 import { createErrorTracker } from "./services/errorTracking.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
-import { notFound, errorHandler } from "./middleware/errors.js";
+import { notFound, errorHandler, rememberMount } from "./middleware/errors.js";
 import { makeWithTransaction, pingDatabase } from "./db.js";
 import { docsGuard } from "./middleware/docsAuth.js";
 import { authRouter } from "./routes/auth.js";
@@ -138,10 +138,10 @@ export function createApp(config, {
       rateLimitFallbackActive: rateLimits.fallbackActive(),
     });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, emailVerifications, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
-  app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
-  app.use("/api/ai", aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
-  app.use("/api/cron", cronRouter({ config, rateLimits, log }));
+  app.use("/api/auth", rememberMount, authRouter({ config, users, passwordResets, emailVerifications, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
+  app.use("/api/resumes", rememberMount, resumesRouter({ resumes, requireAuth, rateLimits, testing }));
+  app.use("/api/ai", rememberMount, aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
+  app.use("/api/cron", rememberMount, cronRouter({ config, rateLimits, log }));
 
   app.use(notFound);
   app.use(errorHandler(log, errors));

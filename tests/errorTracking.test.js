@@ -2,8 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import express from "express";
 import request from "supertest";
 import { makeApp, signedInAgent, startMongo, stopMongo, fakeAi } from "./helpers.js";
-import { errorHandler, HttpError } from "../src/middleware/errors.js";
+import { errorHandler, HttpError, rememberMount } from "../src/middleware/errors.js";
 import { createErrorTracker, scrubEvent, FLUSH_TIMEOUT_MS } from "../src/services/errorTracking.js";
+import { createHandler } from "../src/serverless.js";
 
 beforeAll(startMongo, 120_000);
 afterAll(stopMongo);
@@ -131,13 +132,55 @@ describe("error tracking: what reaches it", () => {
     expect(errors.captured.map((c) => c.where)).toEqual([{ method: "POST", route: "/api/ai/summary" }]);
   });
 
-  it("groups by path pattern, without ids", async () => {
+  it("tags the route pattern, never the token or id in the path", async () => {
     const errors = fakeTracker();
     const app = express();
-    app.use("/api/resumes", express.Router().get("/:id/copy", () => { throw new Error("x"); }));
+    const boom = () => { throw new Error("x"); };
+    app.use("/api/auth", rememberMount, express.Router().get("/reset-password/:token", boom));
+    app.use("/api/resumes", rememberMount, express.Router().get("/:id/copy", boom));
     app.use(errorHandler(quiet, errors));
+    const token = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    await request(app).get(`/api/auth/reset-password/${token}?email=ada@example.com`).expect(500);
     await request(app).get("/api/resumes/65a1b2c3d4e5f60718293a4b/copy?x=1").expect(500);
-    expect(errors.captured[0].where).toEqual({ method: "GET", route: "/api/resumes/:id/copy" });
+    expect(errors.captured.map((c) => c.where)).toEqual([
+      { method: "GET", route: "/api/auth/reset-password/:token" },
+      { method: "GET", route: "/api/resumes/:id/copy" },
+    ]);
+  });
+
+  it("gives a request no route matched no path at all", async () => {
+    const errors = fakeTracker();
+    const app = express();
+    app.use((_req, _res, next) => next(new Error("middleware failed")));
+    app.use(errorHandler(quiet, errors));
+    await request(app).get("/anything/ada@example.com").expect(500);
+    expect(errors.captured[0].where).toEqual({ method: "GET", route: "(unmatched)" });
+  });
+
+  it("reports a provider SDK error that carries its own 4xx status", async () => {
+    // A rejected API key: the SDK says 401, but to our user it is our 500.
+    const errors = fakeTracker();
+    const app = express();
+    app.get("/ai", () => {
+      throw Object.assign(new Error("401 Invalid API Key"), { name: "APIError", status: 401 });
+    });
+    app.use(errorHandler(quiet, errors));
+    await request(app).get("/ai").expect(500);
+    expect(errors.captured.map((c) => c.err.message)).toEqual(["401 Invalid API Key"]);
+  });
+
+  it("does not write a second response when one was already started", async () => {
+    const errors = fakeTracker();
+    const app = express();
+    app.get("/half", (_req, res, next) => {
+      res.status(200).write("partial");
+      next(new Error("failed mid-stream"));
+    });
+    app.use(errorHandler(quiet, errors));
+    const res = await request(app).get("/half").catch((e) => e);
+    // Express's own handler closes the connection; the status already sent stands.
+    expect(res.status ?? 200).toBe(200);
+    expect(errors.captured).toHaveLength(1);
   });
 
   it("reports on /api/health whether it is configured", async () => {
@@ -196,6 +239,22 @@ describe("error tracking: the Sentry client", () => {
     expect(sdk.captured).toEqual([{ err, hint: { tags: { method: "GET", route: "/api/resumes/:id" } } }]);
     expect(sdk.flushes).toEqual([FLUSH_TIMEOUT_MS]);
     expect(FLUSH_TIMEOUT_MS).toBeLessThanOrEqual(2000);
+  });
+
+  it("holds one deadline over loading, initialising and flushing", async () => {
+    // A first import that hangs must not hold the 500 longer than the cap.
+    const tracker = createErrorTracker({ SENTRY_DSN: DSN }, { log: quiet, timeoutMs: 50, load: () => new Promise(() => {}) });
+    const started = Date.now();
+    await tracker.capture(new Error("x"));
+    expect(Date.now() - started).toBeLessThan(500);
+
+    const sdk = fakeSentry();
+    let slowLoad;
+    const slow = createErrorTracker({ SENTRY_DSN: DSN }, { timeoutMs: 200, load: () => new Promise((r) => (slowLoad = () => r(sdk))) });
+    setTimeout(() => slowLoad(), 120);
+    await slow.capture(new Error("y"));
+    // The flush gets what is left of the deadline, not a fresh two seconds.
+    expect(sdk.flushes[0]).toBeLessThanOrEqual(100);
   });
 
   it("never throws, even when the SDK cannot load or send", async () => {
@@ -266,7 +325,66 @@ describe("error tracking: scrubbing", () => {
     expect(JSON.stringify(out)).not.toContain("Ada Lovelace");
   });
 
+  it("redacts emails and tokens in tags", () => {
+    const token = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const out = scrubEvent({ tags: { method: "GET", route: `/api/auth/reset-password/${token}/ada@example.com` } });
+    expect(out.tags).toEqual({ method: "GET", route: "/api/auth/reset-password/[token]/[email]" });
+    expect(scrubEvent({ tags: { route: "/api/auth/reset-password/:token" } }).tags.route).toBe("/api/auth/reset-password/:token");
+  });
+
   it("copes with an event that carries none of those fields", () => {
     expect(scrubEvent({ message: "plain" })).toEqual({ message: "plain" });
+  });
+});
+
+describe("serverless entry: a failed start", () => {
+  const trackerRecording = () => {
+    const tracker = fakeTracker();
+    tracker.configured = true;
+    return tracker;
+  };
+
+  it("is reported at most once a minute per instance, and repeats do not wait", async () => {
+    const errors = trackerRecording();
+    let clock = 0;
+    let waits = 0;
+    errors.capture = async (err, where) => {
+      waits++;
+      errors.captured.push({ err, where });
+    };
+    const handler = createHandler(
+      async (track) => {
+        track(errors);
+        throw new Error("Atlas unreachable");
+      },
+      { log: quiet, now: () => clock }
+    );
+
+    for (let i = 0; i < 5; i++) {
+      const res = await request(handler).get("/api/health");
+      expect([res.status, res.body.error.code]).toEqual([500, "INIT_FAILED"]);
+      clock += 10_000; // five requests across 40 s
+    }
+    expect(errors.captured).toHaveLength(1);
+    expect(errors.captured[0].where).toEqual({ method: "GET", route: "(init)" });
+
+    clock = 70_000; // the next minute
+    await request(handler).get("/api/health").expect(500);
+    expect(errors.captured).toHaveLength(2);
+    expect(waits).toBe(2);
+  });
+
+  it("retries the start on the next request and serves once it succeeds", async () => {
+    let attempts = 0;
+    const handler = createHandler(
+      async () => {
+        if (++attempts === 1) throw new Error("DNS blip");
+        return (_req, res) => res.end("ok");
+      },
+      { log: quiet }
+    );
+    await request(handler).get("/").expect(500);
+    const res = await request(handler).get("/");
+    expect([res.status, res.text]).toEqual([200, "ok"]);
   });
 });

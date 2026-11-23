@@ -10,12 +10,15 @@ Every entry below corresponds to work that actually reached `main`.
 
 ### Added
 - **Error tracking with Sentry (RESUME-42).** Off unless `SENTRY_DSN` is set. The error
-  handler reports 5xx only (not 4xx, and not the three 503s the API answers by design),
-  plus a failed start in `api/index.js`, and flushes (2 s cap) before the response so
-  the frozen serverless function does not drop the event. Built for personal data: only
-  eight integrations, every `dataCollection` category off, and `beforeSend` strips
-  bodies, cookies, query strings, headers, user fields other than an id, frame
-  variables, breadcrumb data and email addresses. No tracing. Release is the Vercel
+  handler reports 5xx only: not 4xx, not body-parser's client errors, and not the three
+  503s the API answers by design. It also reports a failed start (`src/serverless.js`),
+  at most once a minute per instance. One 2 s deadline covers loading, capturing and
+  flushing, and the report finishes before the response so the frozen serverless
+  function does not drop it. Events are tagged with the matched route pattern, never the
+  URL. Built for personal data: only eight integrations run, every `dataCollection`
+  category is off, and `beforeSend` strips bodies, cookies, query strings, headers, user
+  fields other than an id, frame variables, breadcrumb data, and emails and token-like
+  strings in text and tags. No tracing. Release is the Vercel
   commit, environment is `VERCEL_ENV`. `/api/health` reports `errorTrackingConfigured`.
 - **Job match (RESUME-26).** Resumes can carry `jobPosting` (up to 20,000 characters):
   the job they are tailored for. It is saved and copied with the resume, and left out of
