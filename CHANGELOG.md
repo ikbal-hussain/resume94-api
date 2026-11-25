@@ -35,6 +35,10 @@ Every entry below corresponds to work that actually reached `main`.
   Reset and verification tokens now share `repositories/oneTimeTokens.js`.
 
 ### Fixed
+- **"Improve with AI" no longer invents facts.** Its prompt had no rule against it, unlike
+  tailor and import, and turned "Made the website faster" into "…reducing page load times
+  by 30%". It now carries tailor's rule: keep every fact, and add no numbers, percentages,
+  tools, technologies, team sizes, outcomes or responsibilities the original does not state.
 - **A Redis outage no longer takes AI down.** Upstash deleted the idle free database in
   November 2026 and every AI route answered 503 for every user, while `/api/health` still
   said 200. Rate limiters now degrade to counting in-process when Upstash cannot answer —

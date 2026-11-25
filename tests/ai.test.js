@@ -300,6 +300,19 @@ describe("gemini provider", () => {
     expect(seen.init.body).toContain("<<<CONTENT");
   });
 
+  it("tells the improve rewrite not to invent facts, as tailor and import do", async () => {
+    let body;
+    const fetchImpl = async (_url, init) => {
+      body = init.body;
+      return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: "- Made it" }] } }] }) };
+    };
+    await createAiService(cfg({ GEMINI_API_KEY: "k" }), fetchImpl).improve({ section: "experience", content: "Made the website faster" });
+    const prompt = JSON.parse(body).contents[0].parts[0].text;
+    expect(prompt).toMatch(/Do not add numbers, percentages/);
+    // The rule sits before the fenced content, where it is an instruction, not data.
+    expect(prompt.indexOf("Do not add numbers")).toBeLessThan(prompt.indexOf("<<<CONTENT"));
+  });
+
   it("maps upstream failures to 502", async () => {
     const ai = createAiService(cfg({ GEMINI_API_KEY: "k" }), async () => ({ ok: false, status: 500, text: async () => "{}" }));
     await expect(ai.summary({ role: "a", experience: "b", keySkills: "c" })).rejects.toMatchObject({ status: 502 });
