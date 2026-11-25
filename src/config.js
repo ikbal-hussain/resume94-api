@@ -61,6 +61,11 @@ const schema = z.object({
   // tell the new deployment apart from the one it is replacing, instead of passing
   // against the old build and declaring a broken release healthy.
   VERCEL_GIT_COMMIT_SHA: z.string().optional(),
+  // Also injected by Vercel: production, preview or development. Used as Sentry's
+  // environment, so a preview deployment's errors do not land among production's.
+  VERCEL_ENV: z.string().optional(),
+  // Error tracking. Unset or empty means off: the SDK is never loaded and nothing is sent.
+  SENTRY_DSN: z.string().optional(),
 });
 
 const TRUE = new Set(["true", "1", "yes", "on"]);

@@ -12,8 +12,9 @@ import { createMailService } from "./services/mail/index.js";
 import { createGoogleService } from "./services/google.js";
 import { createRateLimitService } from "./services/rateLimit/index.js";
 import { createAiQuota } from "./services/aiQuota.js";
+import { createErrorTracker } from "./services/errorTracking.js";
 import { requireAuth as makeRequireAuth } from "./middleware/auth.js";
-import { notFound, errorHandler } from "./middleware/errors.js";
+import { notFound, errorHandler, rememberMount } from "./middleware/errors.js";
 import { makeWithTransaction, pingDatabase } from "./db.js";
 import { docsGuard } from "./middleware/docsAuth.js";
 import { authRouter } from "./routes/auth.js";
@@ -42,6 +43,9 @@ export function createApp(config, {
   // Injectable so a test can force the losing side of a race that is otherwise a
   // microsecond wide between two queries.
   users = usersRepo(db),
+  // Sentry, or a no-op without SENTRY_DSN. Injected so a test can see what the error
+  // handler reports without an SDK or a network.
+  errors = createErrorTracker(config, { log }),
 }) {
   const testing = config.NODE_ENV === "test";
   const resumes = resumesRepo(db);
@@ -115,6 +119,8 @@ export function createApp(config, {
       mailConfigured: mail.configured,
       mailProvider: mail.provider,
       googleConfigured: google.configured,
+      // Whether a 500 reaches Sentry or only Vercel's logs. Reported, not part of the verdict.
+      errorTrackingConfigured: errors.configured,
       // "memory" in production means every limit is multiplied by the number of warm
       // instances. Nothing else in the API shows that, and the route it matters most on
       // is the one that pays a provider per call.
@@ -132,12 +138,12 @@ export function createApp(config, {
       rateLimitFallbackActive: rateLimits.fallbackActive(),
     });
   });
-  app.use("/api/auth", authRouter({ config, users, passwordResets, emailVerifications, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
-  app.use("/api/resumes", resumesRouter({ resumes, requireAuth, rateLimits, testing }));
-  app.use("/api/ai", aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
-  app.use("/api/cron", cronRouter({ config, rateLimits, log }));
+  app.use("/api/auth", rememberMount, authRouter({ config, users, passwordResets, emailVerifications, mail, google, withTransaction, requireAuth, rateLimits, testing, log }));
+  app.use("/api/resumes", rememberMount, resumesRouter({ resumes, requireAuth, rateLimits, testing }));
+  app.use("/api/ai", rememberMount, aiRouter({ config, ai, aiQuota, requireAuth, rateLimits, testing, log }));
+  app.use("/api/cron", rememberMount, cronRouter({ config, rateLimits, log }));
 
   app.use(notFound);
-  app.use(errorHandler(log));
+  app.use(errorHandler(log, errors));
   return app;
 }

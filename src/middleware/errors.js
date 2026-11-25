@@ -1,4 +1,5 @@
 import { ZodError } from "zod";
+import { shouldCapture } from "../services/errorTracking.js";
 
 export class HttpError extends Error {
   constructor(status, message, code) {
@@ -59,7 +60,11 @@ export const validateBody = (schema) => (req, _res, next) => {
 
 export const notFound = (_req, _res, next) => next(new HttpError(404, "Route not found", "NOT_FOUND"));
 
-export const errorHandler = (log) => (err, req, res, _next) => {
+// `errors` is the tracker from services/errorTracking.js. Only 5xx reach it: a 4xx is the
+// client's mistake and expected, a 5xx is ours. It is awaited before the response because
+// the serverless function freezes once the response is sent, taking an unsent event with
+// it; the tracker bounds that wait to two seconds and never throws.
+export const errorHandler = (log, errors) => async (err, req, res, next) => {
   if (err instanceof ZodError) {
     return res.status(400).json({
       error: {
@@ -76,9 +81,41 @@ export const errorHandler = (log) => (err, req, res, _next) => {
     return res.status(400).json({ error: { code: "BAD_JSON", message: "Malformed JSON" } });
   }
   if (err instanceof HttpError) {
+    if (shouldCapture(err, err.status)) await errors?.capture(err, where(req));
+    // The wait above can outlast a response something else already started; Express's
+    // own handler then closes the connection rather than writing a second one.
+    if (res.headersSent) return next(err);
     if (err.headers) res.set(err.headers); // e.g. the WWW-Authenticate challenge
     return res.status(err.status).json({ error: { code: err.code || "ERROR", message: err.message } });
   }
   log.error(err);
+  if (!clientFault(err)) await errors?.capture(err, where(req));
+  if (res.headersSent) return next(err);
   res.status(500).json({ error: { code: "INTERNAL", message: "Something went wrong" } });
 };
+
+// body-parser's own errors (a client hanging up mid-upload is "request.aborted", 400)
+// still answer 500 here, as before, but they are the client's doing. Their 4xx is trusted
+// only because body-parser marks them: `type`, or http-errors' `expose`. Any other error
+// that happens to carry a status — a provider SDK's 401 for a rejected key — is ours.
+function clientFault(err) {
+  const status = err.status ?? err.statusCode;
+  return status >= 400 && status < 500 && (typeof err.type === "string" || err.expose === true);
+}
+
+/**
+ * Records where a router is mounted. Express resets req.baseUrl before an app-level
+ * error handler runs, so without this req.route.path reads "/:token" with its mount gone.
+ */
+export const rememberMount = (req, _res, next) => {
+  req.mountPath = req.baseUrl;
+  next();
+};
+
+// The matched route pattern, never the URL: "/api/auth/reset-password/:token" groups
+// every failure into one issue and carries neither the token nor an id nor a query
+// string. A request no route matched gets no path at all, since its URL is arbitrary.
+function where(req) {
+  const route = req.route ? `${req.mountPath ?? ""}${req.route.path}` : "(unmatched)";
+  return { method: req.method, route };
+}

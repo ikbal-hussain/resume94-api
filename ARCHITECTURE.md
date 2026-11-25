@@ -43,6 +43,8 @@ is the serverless entry. Both call `createApp`, so there is one code path, not t
 
 ### Serverless connection reuse
 
+`src/serverless.js` (`createHandler`), which `api/index.js` wraps around the start-up:
+
 ```js
 let appPromise;
 export default async function handler(req, res) {
@@ -400,6 +402,59 @@ In production both `/api/docs` and `/api/openapi.json` **report 404** unless
 endpoint list with every field and every limit is free reconnaissance; a 404 does not
 advertise that the route exists at all.
 
+## Error tracking
+
+Sentry (`@sentry/node`, `src/services/errorTracking.js`), **off unless `SENTRY_DSN` is
+set**: without it the SDK is never imported, so tests and local work need nothing.
+`/api/health` reports `errorTrackingConfigured`; it is not part of the 503 verdict.
+
+- **What is reported.** The error handler reports 5xx only, since a 4xx is the client's
+  mistake. Every unexpected error that answers 500 is reported, except body-parser's
+  own client errors (marked by `type` or `expose`, such as a client hanging up
+  mid-upload). Any other error carrying a 4xx status is ours: a provider SDK's 401 for a
+  rejected key, for instance. Three 5xx codes the API answers by design are skipped
+  (`AI_BUDGET_EXHAUSTED`, `AI_UNAVAILABLE`, `GOOGLE_NOT_CONFIGURED`): each would be one
+  event per AI request until it cleared, and health already shows them.
+- **Where.** Each event is tagged with the method and the *matched route pattern*
+  (`/api/auth/reset-password/:token`), never the URL, which can hold a token, an id or
+  an email. `rememberMount` records each router's mount point, because Express resets
+  `req.baseUrl` before an app-level error handler runs. A request no route matched is
+  tagged `(unmatched)`. `beforeSend` also redacts emails and long token-like runs in
+  every tag.
+- **A failed start** (Atlas unreachable) never reaches the handler, so
+  `src/serverless.js`, the handler behind `api/index.js`, reports it itself. It does
+  so **at most once a minute per instance**. During an outage every request fails the
+  same way, and repeats are neither sent nor waited for.
+- **Serverless flush.** A Vercel function freezes once its response is sent, and an
+  event still queued then is lost. The handler therefore awaits `capture` before it
+  answers. One 2-second deadline covers the whole report: the SDK's first import, init,
+  capture and `Sentry.flush`. A 500 can be up to two seconds slower; a 4xx never is.
+  `capture` never throws. If a response had already started by the time it returns,
+  the handler hands the error to Express rather than writing a second one.
+- **Uncaught exceptions and unhandled rejections are best effort.** The SDK's own
+  handlers capture them, and an uncaught exception flushes before the process exits.
+  An unhandled rejection is not flushed: on a frozen serverless instance it can be lost.
+  Everything that goes through a request reaches the handler and is flushed.
+- **Privacy.** Resumes are personal data, so there are three layers. Only eight
+  integrations run (`defaultIntegrations: false`): none of console, http, fetch,
+  request data or local variables, which would carry provider replies, Upstash URLs
+  whose keys hold client IPs, the request, and a resume in scope. `dataCollection`
+  turns every automatic category off (it replaced `sendDefaultPii`, which
+  `@sentry/node` 11 no longer has). `beforeSend` (`scrubEvent`) removes request bodies,
+  cookies, query strings, every header but content type, length and user agent, user
+  fields other than an id, frame variables, breadcrumb data and `extra`, and replaces
+  email addresses in messages — Mongo's duplicate-key error quotes the email.
+- **No tracing.** `tracesSampleRate: 0`. Because a rate is set at all, the SDK adds its
+  own span-streaming integration next to the eight; at 0 nothing is sampled or sent.
+  `release` is `VERCEL_GIT_COMMIT_SHA`; `environment` is `VERCEL_ENV` (production /
+  preview), else `NODE_ENV`.
+- **Install size.** `@sentry/node` 11.10.0 adds about 83 MB to the production install
+  (45 MB before, 127 MB after, measured with `npm ci --omit=dev`). It brings
+  `@sentry/bundler-plugins`, `oxc-parser` (a native binary) and the `sentry` CLI
+  (15 MB) as production dependencies, which this code never imports. Vercel traces
+  imports, so the deployed function is probably smaller than that; this has not been
+  measured. It is under Vercel's 250 MB limit either way.
+
 ## Known limitations
 
 These are real and stated deliberately — each has a tracked fix.
@@ -426,4 +481,3 @@ These are real and stated deliberately — each has a tracked fix.
    though the users and the database are in India.
 5. **Profile photos are base64 inside the resume document.** Object storage would be
    correct; this is why the JSON limit is 2 MB rather than something sane.
-6. **No error tracking.** A 500 in production is visible only in Vercel's logs.

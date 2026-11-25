@@ -1,28 +1,19 @@
 // Vercel serverless entry. The Express app and Mongo connection are created once
 // per warm instance and reused across invocations (avoids reconnecting each request).
+// The caching, the retry after a failed start and its reporting live in src/serverless.js.
 import { loadConfig } from "../src/config.js";
 import { createApp } from "../src/app.js";
 import { connectDb } from "../src/db.js";
+import { createErrorTracker } from "../src/services/errorTracking.js";
+import { createHandler } from "../src/serverless.js";
 
-let appPromise;
-
-async function init() {
+export default createHandler(async (track) => {
   const config = loadConfig();
+  // Before the database, so a failed connection is reported too. If the config itself
+  // fails to load there is nothing to configure Sentry from, and only the log has it.
+  const errors = createErrorTracker(config);
+  track(errors);
   if (!config.MONGODB_URI) throw new Error("MONGODB_URI is required");
   const { db, client } = await connectDb(config.MONGODB_URI, config.MONGODB_DB);
-  return createApp(config, { db, client });
-}
-
-export default async function handler(req, res) {
-  try {
-    appPromise ??= init();
-    const app = await appPromise;
-    return app(req, res);
-  } catch (err) {
-    appPromise = undefined; // retry init on the next request
-    console.error("init failed", err);
-    res.statusCode = 500;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: { code: "INIT_FAILED", message: "Service unavailable" } }));
-  }
-}
+  return createApp(config, { db, client, errors });
+});
